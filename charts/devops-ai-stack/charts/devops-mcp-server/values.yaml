@@ -1,0 +1,126 @@
+# devops-mcp-server — the MCP tool server. Holds the only Kubernetes credentials in this
+# stack; the agent reaches the cluster only through it.
+
+enabled: true
+
+nameOverride: ""
+# Not release-prefixed: the agent's MCP_HTTP_URL addresses this Service by name.
+fullnameOverride: "devops-mcp-server"
+
+replicaCount: 1
+
+image:
+  registry: docker.io
+  repository: nvlannasik/devops-mcp-server
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: "devops-mcp-server"
+  # Required: this is the identity the in-cluster Kubernetes client authenticates with.
+  automountServiceAccountToken: true
+  annotations: {}
+
+env:
+  NODE_ENV: "production"
+  PORT: "3000"
+  MCP_TRANSPORT: "http"
+  K8S_AUTH_MODE: "incluster"
+  # PROMETHEUS_URL / LOKI_URL / TRACING_URL are cluster-specific — set them per overlay.
+
+secretEnv: {}
+extraEnv: []
+
+service:
+  type: ClusterIP
+  port: 3000
+  annotations: {}
+
+rbac:
+  # The ClusterRole and its binding. This used to be raw YAML in the GitOps overlay,
+  # duplicated per environment; here it is rendered from the same values as the
+  # ServiceAccount it binds to, so the two cannot drift apart.
+  create: true
+
+  # Read-only access is what the investigation tools need. Everything in this list is
+  # get/list only.
+  readOnly: true
+
+  # Write verbs for the remediation tools (rollout_restart, set_image, set_resources,
+  # scale, delete_pod). OFF by default: a chart that grants mutating cluster-wide RBAC
+  # the moment it is installed is a chart that surprises someone.
+  #
+  # Enabling this alone changes nothing at runtime — the server also needs
+  # MCP_ENABLE_WRITE_TOOLS=true and an ALLOWED_REMEDIATION_NAMESPACES list. Both layers
+  # must agree, which is the point: RBAC is the outer bound, the env vars the inner one.
+  allowWrite: false
+
+  # Lets the flux_reconcile tool annotate a HelmRelease so Flux re-applies what the repo
+  # declares. It only ever RESTORES declared state — spec.values are never written here,
+  # those go through a pull request.
+  allowFluxReconcile: false
+
+  # Extra rules appended verbatim, for tools this chart does not know about.
+  extraRules: []
+
+resources: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  fsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+extraVolumes:
+  - name: tmp
+    emptyDir: {}
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp
+
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: main
+  initialDelaySeconds: 15
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: main
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+terminationGracePeriodSeconds: 30
+
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+podAnnotations: {}
+podLabels: {}
+commonLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""

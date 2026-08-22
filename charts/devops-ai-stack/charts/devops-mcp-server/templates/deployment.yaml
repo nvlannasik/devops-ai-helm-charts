@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "devops-ai.fullname" . }}
+  labels:
+    {{- include "devops-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp-server
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  {{- with .Values.updateStrategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "devops-ai.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "devops-ai.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: mcp-server
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "devops-ai.podSpecCommon" . | nindent 6 }}
+      containers:
+        - name: mcp-server
+          image: {{ include "devops-ai.image" . }}
+          {{- include "devops-ai.containerCommon" . | nindent 10 }}
+          ports:
+            - name: main
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            {{- include "devops-ai.mcpAuthEnv" . | nindent 12 }}
+            {{- include "devops-ai.env" . | nindent 12 }}
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            {{- omit .Values.livenessProbe "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+          {{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            {{- omit .Values.readinessProbe "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+      {{- with .Values.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,124 @@
+# devops-llm-worker — SQS consumer bridging the agent to a private LLM, and the private
+# network's bridge to GitHub for GitOps PRs.
+#
+# No Service and no Ingress: this workload is outbound-only. It polls SQS and calls out;
+# nothing ever connects TO it. A Service here would be an unused attack surface.
+
+enabled: true
+
+nameOverride: ""
+fullnameOverride: "devops-llm-worker"
+
+replicaCount: 1
+
+image:
+  registry: docker.io
+  repository: nvlannasik/llm-worker
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: "devops-llm-worker"
+  automountServiceAccountToken: false
+  annotations: {}
+
+env:
+  NODE_ENV: "production"
+  SQS_POLL_WAIT_SECONDS: "20"
+  SQS_MAX_MESSAGES: "10"
+  # Names the WIRE FORMAT, not the vendor: "openai" posts /v1/chat/completions,
+  # "anthropic" posts /v1/messages. A self-hosted model behind an OpenAI-compatible
+  # gateway is "openai". Validated at umbrella level — a typo fails the render.
+  LLM_API_FORMAT: "openai"
+  LLM_MAX_TOKENS: "16384"
+
+secretEnv:
+  LLM_API_KEY:
+    secret: llm-api-key-secret
+    key: api-key
+    optional: true
+
+extraEnv: []
+
+# GitOps PR remediation. The worker is the private-network bridge to GitHub — it holds
+# the credentials, the agent holds none.
+gitops:
+  enabled: false
+  repo: ""                 # owner/name
+  branch: "main"
+  apiUrl: "https://api.github.com"
+  tokenSecret:
+    name: github-token-secret
+    key: token
+
+# A cert-manager Certificate for AWS IAM Roles Anywhere: the worker authenticates to AWS
+# with an X.509 workload cert rather than a static key. Off by default — it needs a
+# ClusterIssuer that this chart does not create.
+certificate:
+  enabled: false
+  issuerRef:
+    name: workload-ca-issuer
+    kind: ClusterIssuer
+  secretName: workload-tls
+  commonName: devops-llm-worker
+  duration: 720h
+  renewBefore: 48h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - client auth
+  mountPath: /certs
+
+resources: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  fsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+extraVolumes:
+  - name: tmp
+    emptyDir: {}
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp
+
+# No HTTP probes: there is no server to probe. Liveness is "the process is up"; a worker
+# wedged on a slow LLM call is doing its job, and an HTTP probe would kill it mid-request.
+livenessProbe:
+  enabled: false
+readinessProbe:
+  enabled: false
+
+# Long enough for an in-flight LLM call to finish rather than be retried from the DLQ.
+terminationGracePeriodSeconds: 120
+
+# Recreate, not RollingUpdate: two replicas of a FIFO consumer during a rollout both poll
+# the same queue. Ordering is the queue's guarantee, not something a second consumer
+# preserves.
+updateStrategy:
+  type: Recreate
+
+podAnnotations: {}
+podLabels: {}
+commonLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""

@@ -1,0 +1,9 @@
+{{/*
+Runs the cross-repo contract checks in _validate.tpl. They are invoked from a template of
+their own so they fire exactly once for the whole release, and before any workload
+renders — a subchart cannot see its siblings' values, so this has to live at the umbrella
+level.
+
+This file deliberately produces no output.
+*/}}
+{{- include "devops-ai.validate" . -}}

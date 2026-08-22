@@ -1,0 +1,116 @@
+# devops-ai-stack — umbrella values.
+#
+# Anything two services must AGREE on lives under `global:`. Set it once here and both
+# sides read it. templates/_validate.tpl fails `helm template` if they ever disagree, so
+# a mismatch is caught in CI rather than at 3am in a Slack thread.
+#
+# Anything only one service cares about lives under that service's own key.
+
+global:
+  mcp:
+    # Shared bearer token: the agent sends it, the MCP server compares it. Both sides get
+    # this same value.
+    #
+    # Do NOT put a real token here — values.yaml goes into Git. Use authTokenSecret, or
+    # pass --set at install time.
+    authToken: ""
+    # Read the token from an existing Secret instead. Takes precedence over authToken.
+    authTokenSecret:
+      name: ""
+      key: "MCP_AUTH_TOKEN"
+
+    # Where the agent finds the MCP server. Left empty, it is derived from the
+    # mcp-server Service in this release, which is what you want when both run here.
+    # Set url only when the MCP server lives outside this release.
+    url: ""
+    serviceName: "devops-mcp-server"
+    namespace: ""      # defaults to the release namespace
+    port: 3000
+
+  sqs:
+    # The agent writes LLM requests here; llm-worker reads them.
+    requestQueue: "llm-request.fifo"
+    # SHARED response queue: the worker writes replies, the agent routes them back by
+    # requestId. One queue, both directions of the reply path.
+    responseQueue: "llm-response.fifo"
+    requestDlq: "llm-request-dlq.fifo"
+    # Second contract, for the GitOps PR flow. Only used when the agent has
+    # GITOPS_REMEDIATION_ENABLED=true.
+    gitopsRequestQueue: "gitops-request.fifo"
+    region: "ap-southeast-1"
+
+  # Whether this release also deploys Postgres and Redis, and what they are called.
+  #
+  # These live under global rather than beside the subchart values below because the
+  # agent needs them: a subchart's templates can read only its own values plus global,
+  # so a flag at the root would be invisible to it. Chart.yaml gates both dependencies
+  # on these keys, and the agent's DB_HOST / REDIS_HOST are derived from them.
+  #
+  # Both OFF by default, and that default is deliberate: the cluster this stack was
+  # built for already runs postgresql and redis as their own Flux HelmReleases, so
+  # turning these on there would give it a second Postgres rather than a shared one.
+  # Turn them on for a fresh cluster or a demo, where one `helm install` should produce
+  # a working stack. With them off, set DB_HOST and REDIS_HOST in devops-ai-agent.env.
+  postgresql:
+    enabled: false
+    # Only if you also set postgresql.fullnameOverride below; the two must agree, and
+    # the chart checks that they do.
+    fullnameOverride: ""
+  redis:
+    enabled: false
+    fullnameOverride: ""
+
+  # Applied to every workload in the stack.
+  imagePullSecrets: []
+  commonLabels: {}
+
+# ---------------------------------------------------------------------------
+# Services. Each key matches the subchart name in Chart.yaml dependencies.
+# See each subchart's values.yaml for the full set.
+# ---------------------------------------------------------------------------
+
+devops-ai-agent:
+  enabled: true
+
+devops-mcp-server:
+  enabled: true
+
+devops-llm-worker:
+  # Only needed when the agent has a private-llm backend, or when GitOps PR remediation
+  # is on. Off by default: an agent on Claude or an OpenAI-compatible endpoint calls out
+  # directly and never touches SQS.
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Backing services — settings passed to the Bitnami subcharts.
+#
+# The on/off switch is NOT here, it is global.postgresql.enabled / global.redis.enabled
+# above, so that the agent can see it too. Setting `postgresql.enabled` here instead is
+# a no-op that would leave you with an agent configured for a Postgres nobody deployed,
+# so the chart fails the render if it finds one.
+# ---------------------------------------------------------------------------
+
+postgresql:
+  # The Bitnami chart creates a database only when auth.database is set, and only on
+  # FIRST init of an empty volume. App migrations create tables, never the database
+  # itself — so a volume that was initialised without this needs a manual CREATE
+  # DATABASE. Validated at render time when global.postgresql.enabled is true.
+  auth:
+    database: "devops_agent"
+    username: "postgres"
+    existingSecret: ""
+  architecture: standalone
+  primary:
+    persistence:
+      enabled: true
+      size: 8Gi
+
+redis:
+  architecture: standalone
+  auth:
+    enabled: true
+    existingSecret: ""
+    existingSecretPasswordKey: "redis-password"
+  master:
+    persistence:
+      enabled: false   # conversation cache — losing it costs context, not data

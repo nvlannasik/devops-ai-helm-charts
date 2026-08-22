@@ -1,0 +1,7 @@
+# Packaged output of `helm package`, at the repo root only. The Bitnami dependency
+# tarballs under charts/devops-ai-stack/charts/ are committed on purpose: they pin what
+# `helm template` actually renders, so CI and Flux do not need to reach a chart
+# repository to reproduce a release.
+/*.tgz
+
+.DS_Store

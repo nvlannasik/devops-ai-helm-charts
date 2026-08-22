@@ -1,0 +1,71 @@
+name: lint
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+
+      - name: helm lint
+        run: helm lint charts/devops-ai-stack --set global.mcp.authToken=ci
+
+      # The dev example is the migration reference for a real cluster. If it stops
+      # rendering, it has drifted from the chart and is worse than no example.
+      - name: render the dev example
+        run: |
+          helm template devops-ai charts/devops-ai-stack \
+            -n devops-tools -f examples/values-dev.yaml > /dev/null
+
+      - name: render with everything enabled
+        run: |
+          helm template devops-ai charts/devops-ai-stack \
+            --set global.mcp.authToken=ci \
+            --set global.postgresql.enabled=true \
+            --set global.redis.enabled=true \
+            --set devops-llm-worker.enabled=true \
+            --set devops-llm-worker.gitops.enabled=true \
+            --set devops-llm-worker.gitops.repo=org/repo > /dev/null
+
+      # The cross-service checks are the reason this chart exists, so a silent
+      # regression in them is the failure that matters most. Each case below MUST fail
+      # to render; a passing render here is the bug.
+      - name: the validations still fire
+        run: |
+          set -u
+          fails=0
+          expect_fail() {
+            desc="$1"; shift
+            if helm template t charts/devops-ai-stack --set global.mcp.authToken=ci "$@" >/dev/null 2>&1; then
+              echo "NOT CAUGHT: $desc"
+              fails=$((fails + 1))
+            else
+              echo "caught: $desc"
+            fi
+          }
+
+          expect_fail "MCP token mismatch" \
+            --set devops-ai-agent.env.MCP_AUTH_TOKEN=a --set devops-mcp-server.env.MCP_AUTH_TOKEN=b
+          expect_fail "MCP transport mismatch" \
+            --set devops-mcp-server.env.MCP_TRANSPORT=stdio
+          expect_fail "SQS response queue mismatch" \
+            --set devops-llm-worker.enabled=true \
+            --set devops-llm-worker.env.SQS_RESPONSE_QUEUE_NAME=other.fifo
+          expect_fail "private-llm backend with no worker" \
+            --set devops-ai-agent.env.LLM_BACKEND_1_KIND=private-llm
+          expect_fail "gitops on the agent with no worker" \
+            --set devops-ai-agent.env.GITOPS_REMEDIATION_ENABLED=true
+          expect_fail "unknown LLM_API_FORMAT" \
+            --set devops-llm-worker.enabled=true --set devops-llm-worker.env.LLM_API_FORMAT=gemini
+          expect_fail "bundled postgres with no database name" \
+            --set global.postgresql.enabled=true --set postgresql.auth.database=null
+          expect_fail "DB_NAME disagrees with the bundled database" \
+            --set global.postgresql.enabled=true --set devops-ai-agent.env.DB_NAME=other
+          expect_fail "postgresql.enabled set at the root, where it does nothing" \
+            --set postgresql.enabled=true
+
+          test "$fails" -eq 0

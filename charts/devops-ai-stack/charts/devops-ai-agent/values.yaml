@@ -1,0 +1,167 @@
+# devops-ai-agent — Slack bot and agentic investigation loop.
+#
+# Values that must agree with another service are NOT set here. Set them once under the
+# umbrella's `global:` and let both sides read them; templates/_validate.tpl fails the
+# render if the two ever disagree.
+
+enabled: true
+
+nameOverride: ""
+# Not release-prefixed: MCP_HTTP_URL and Slack config address this by name.
+fullnameOverride: "devops-ai-agent"
+
+replicaCount: 1
+
+image:
+  registry: docker.io
+  repository: nvlannasik/devops-ai-agent
+  tag: ""          # defaults to .Chart.AppVersion
+  digest: ""       # wins over tag when set
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: "devops-ai-agent"
+  # The agent itself never talks to the Kubernetes API — that is the MCP server's job.
+  automountServiceAccountToken: false
+  annotations: {}
+
+# Plain environment variables: name -> value. A map, not a list, so a Kustomize overlay
+# can patch one key without replacing every other.
+env:
+  NODE_ENV: "production"
+  PORT: "3000"
+  MCP_TRANSPORT: "http"
+  # MCP_HTTP_URL is derived from the mcp-server Service unless global.mcp.url is set.
+  MEMORY_BACKEND: "redis"
+  MAX_CONCURRENT_INVESTIGATIONS: "5"
+  DASHBOARD_ENABLED: "true"
+  DASHBOARD_PORT: "3001"
+  DB_PORT: "5432"
+  DB_SSL_MODE: "disable"
+  DB_NAME: "devops_agent"
+  REDIS_PORT: "6379"
+  REDIS_DB: "0"
+  REDIS_TLS: "false"
+
+# Secret-backed environment: name -> {secret, key, optional}. Nothing sensitive belongs
+# in `env` above — values.yaml ends up in Git.
+secretEnv:
+  SLACK_BOT_TOKEN:
+    secret: devops-agent-secret
+    key: SLACK_BOT_TOKEN
+  SLACK_SIGNING_SECRET:
+    secret: devops-agent-secret
+    key: SLACK_SIGNING_SECRET
+  SLACK_APP_TOKEN:
+    secret: devops-agent-secret
+    key: SLACK_APP_TOKEN
+  ALERT_WEBHOOK_TOKEN:
+    secret: devops-agent-secret
+    key: ALERT_WEBHOOK_TOKEN
+  DB_PASSWORD:
+    secret: devops-agent-secret
+    key: DB_PASSWORD
+  REDIS_PASSWORD:
+    secret: devops-agent-secret
+    key: REDIS_PASSWORD
+  DASHBOARD_PASSWORD:
+    secret: devops-agent-secret
+    key: DASHBOARD_PASSWORD
+    optional: true
+
+# Raw core/v1 EnvVar entries, appended last. For shapes the two maps above cannot express
+# (fieldRef, resourceFieldRef, configMapKeyRef).
+extraEnv: []
+
+service:
+  type: ClusterIP
+  port: 3000
+  # The read-only incident dashboard. Same Pod, second port.
+  dashboardPort: 3001
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  #  - host: agent.example.com
+  #    paths:
+  #      - path: /
+  #        pathType: Prefix
+  #        port: 3000
+  tls: []
+
+# Alertmanager posts here. Off by default: it needs a routable host, and until one exists
+# an enabled-but-unroutable webhook looks healthy while dropping every alert.
+webhook:
+  enabled: false
+
+resources: {}
+  # limits:
+  #   cpu: 500m
+  #   memory: 512Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 256Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  fsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# readOnlyRootFilesystem needs somewhere writable for tmp.
+extraVolumes:
+  - name: tmp
+    emptyDir: {}
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp
+
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: main
+  initialDelaySeconds: 20
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: main
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# An investigation in flight should finish rather than be cut off mid-RCA.
+terminationGracePeriodSeconds: 60
+
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+podAnnotations: {}
+podLabels: {}
+commonLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""

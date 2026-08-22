@@ -1,0 +1,57 @@
+{{- $g := .Values.global | default dict -}}
+{{- $agent := index .Values "devops-ai-agent" | default dict -}}
+{{- $mcp := index .Values "devops-mcp-server" | default dict -}}
+{{- $worker := index .Values "devops-llm-worker" | default dict -}}
+{{ .Chart.Name }} {{ .Chart.Version }} installed as {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Deployed:
+{{ if ne $agent.enabled false }}  agent       {{ $agent.fullnameOverride | default "devops-ai-agent" }}{{ else }}  agent       (disabled){{ end }}
+{{ if ne $mcp.enabled false }}  mcp-server  {{ $mcp.fullnameOverride | default "devops-mcp-server" }}{{ else }}  mcp-server  (disabled){{ end }}
+{{ if $worker.enabled }}  llm-worker  {{ $worker.fullnameOverride | default "devops-llm-worker" }}{{ else }}  llm-worker  (disabled — the agent calls its LLM backends directly){{ end }}
+{{- if ($g.postgresql | default dict).enabled }}
+  postgres    {{ ($g.postgresql).fullnameOverride | default (printf "%s-postgresql" .Release.Name) }} (bundled)
+{{- end }}
+{{- if ($g.redis | default dict).enabled }}
+  redis       {{ printf "%s-master" (($g.redis).fullnameOverride | default (printf "%s-redis" .Release.Name)) }} (bundled)
+{{- end }}
+
+Watch it come up:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ $agent.fullnameOverride | default "devops-ai-agent" }}
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ .Release.Name }} --tail=50 -f
+
+{{- if ne $agent.enabled false }}
+
+The agent needs these Secrets to exist in {{ .Release.Namespace }} — it will CrashLoop
+without them, and the chart cannot check for them at render time:
+{{ range $name, $ref := ($agent.secretEnv | default dict) }}{{ if not $ref.optional }}  {{ $ref.secret }}/{{ $ref.key }}
+{{ end }}{{ end }}
+{{- end }}
+{{- if and (ne $agent.enabled false) (eq (($agent.env | default dict).DASHBOARD_ENABLED | toString) "true") }}
+
+Dashboard (not exposed by a Service port unless you set one):
+
+  kubectl -n {{ .Release.Namespace }} port-forward deploy/{{ $agent.fullnameOverride | default "devops-ai-agent" }} {{ ($agent.service | default dict).dashboardPort | default 3001 }}
+{{- end }}
+{{- if ($g.postgresql | default dict).enabled }}
+
+The bundled Postgres created database {{ ((.Values.postgresql | default dict).auth | default dict).database }} on FIRST init only. If you
+reused an existing volume, that database does not exist and the agent will fail every
+query — create it once by hand.
+{{- end }}
+{{- if and (ne $mcp.enabled false) (($mcp.rbac | default dict).allowWrite) }}
+
+WARNING: the MCP server has WRITE access to the cluster.
+
+  RBAC          allowWrite: true{{ if ($mcp.rbac).allowFluxReconcile }}, allowFluxReconcile: true{{ end }}
+  env           MCP_ENABLE_WRITE_TOOLS: {{ (($mcp.env | default dict).MCP_ENABLE_WRITE_TOOLS | default "unset") | quote }}
+  namespaces    {{ (($mcp.env | default dict).ALLOWED_REMEDIATION_NAMESPACES | default "unset") }}
+
+RBAC is the outer bound and is cluster-wide; ALLOWED_REMEDIATION_NAMESPACES is the inner
+one. Narrowing the env var alone does not narrow what the ServiceAccount may do.
+{{- end }}
+
+Verify the whole stack agrees with itself at any time:
+
+  helm get values {{ .Release.Name }} -n {{ .Release.Namespace }}
+  helm template {{ .Release.Name }} . -f <your values>   # cross-service checks run here

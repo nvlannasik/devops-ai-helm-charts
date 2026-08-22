@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "devops-ai.fullname" . }}
+  labels:
+    {{- include "devops-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: llm-worker
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  {{- with .Values.updateStrategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "devops-ai.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "devops-ai.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: llm-worker
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "devops-ai.podSpecCommon" . | nindent 6 }}
+      containers:
+        - name: llm-worker
+          image: {{ include "devops-ai.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+          {{- with .Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # No ports: nothing connects to this workload.
+          env:
+            {{- include "devops-ai.sqsEnv" . | nindent 12 }}
+            {{- include "devops-ai.env" . | nindent 12 }}
+            {{- if .Values.gitops.enabled }}
+            - name: GITOPS_REPO
+              value: {{ required "devops-llm-worker.gitops.repo is required when gitops.enabled — the worker needs to know which repo to open PRs against" .Values.gitops.repo | quote }}
+            - name: GITOPS_BRANCH
+              value: {{ .Values.gitops.branch | quote }}
+            - name: GITHUB_API_URL
+              value: {{ .Values.gitops.apiUrl | quote }}
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.gitops.tokenSecret.name }}
+                  key: {{ .Values.gitops.tokenSecret.key }}
+            {{- end }}
+            {{- if .Values.certificate.enabled }}
+            - name: CERT_PATH
+              value: {{ printf "%s/tls.crt" .Values.certificate.mountPath | quote }}
+            - name: CERT_KEY_PATH
+              value: {{ printf "%s/tls.key" .Values.certificate.mountPath | quote }}
+            {{- end }}
+          volumeMounts:
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.certificate.enabled }}
+            - name: workload-cert
+              mountPath: {{ .Values.certificate.mountPath }}
+              readOnly: true
+            {{- end }}
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            {{- omit .Values.livenessProbe "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+          {{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            {{- omit .Values.readinessProbe "enabled" | toYaml | nindent 12 }}
+          {{- end }}
+      volumes:
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.certificate.enabled }}
+        - name: workload-cert
+          secret:
+            secretName: {{ .Values.certificate.secretName }}
+        {{- end }}

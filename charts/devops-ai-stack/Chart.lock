@@ -1,0 +1,18 @@
+dependencies:
+- name: devops-ai-agent
+  repository: ""
+  version: 0.1.0
+- name: devops-mcp-server
+  repository: ""
+  version: 0.1.0
+- name: devops-llm-worker
+  repository: ""
+  version: 0.1.0
+- name: postgresql
+  repository: https://charts.bitnami.com/bitnami
+  version: 16.7.27
+- name: redis
+  repository: https://charts.bitnami.com/bitnami
+  version: 20.13.4
+digest: sha256:39f55ca20a0513b0e3accb29edd06e9863a7e244390c55b5f8e37cb4151ebb06
+generated: "2026-08-22T02:42:37.697984+07:00"

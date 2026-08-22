@@ -1,0 +1,129 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "devops-ai.fullname" . }}
+  labels:
+    {{- include "devops-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp-server
+rules:
+  # ---- read-only: what the investigation tools need ----
+
+  # Cluster-scoped core resources.
+  - apiGroups: [""]
+    resources: ["namespaces", "nodes", "persistentvolumes"]
+    verbs: ["get", "list"]
+
+  # Namespaced core resources.
+  - apiGroups: [""]
+    resources:
+      - pods
+      - services
+      - events
+      - persistentvolumeclaims
+      - resourcequotas
+      - serviceaccounts
+      - configmaps
+      - secrets
+      - endpoints
+    verbs: ["get", "list"]
+
+  # Pod logs are a subresource and need their own rule.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list"]
+
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list"]
+
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list"]
+
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list"]
+
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list"]
+
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list"]
+
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list"]
+
+  # Backs the k8s_get_sa_permissions tool: answering "can this workload do X" means
+  # reading the roles and bindings, not attempting the action.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "clusterroles", "rolebindings", "clusterrolebindings"]
+    verbs: ["get", "list"]
+
+  # Reading Flux objects is how the agent tells "the repo declares X but the cluster
+  # runs Y" — the drift case that turns into a PR rather than a direct change.
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: ["helmreleases"]
+    verbs: ["get", "list"]
+  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+    resources: ["kustomizations"]
+    verbs: ["get", "list"]
+
+  {{- if .Values.rbac.allowWrite }}
+  # ---- mutating: the guarded remediation tools ----
+  # Reached only when MCP_ENABLE_WRITE_TOOLS is also true AND the target namespace is in
+  # ALLOWED_REMEDIATION_NAMESPACES. This grant is the outer bound, not the whole gate.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["patch", "update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale", "statefulsets/scale"]
+    verbs: ["patch", "update"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["patch", "update"]
+  # k8s_delete_pod. Scoped to pods: no other resource is deletable through this role.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+  {{- end }}
+
+  {{- if .Values.rbac.allowFluxReconcile }}
+  # ---- flux_reconcile ----
+  # Annotates a HelmRelease with reconcile.fluxcd.io/{requestedAt,forceAt} so Flux
+  # re-applies the repo's declared state. Restores Git; never writes spec.values.
+  - apiGroups: ["helm.toolkit.fluxcd.io"]
+    resources: ["helmreleases"]
+    verbs: ["patch"]
+  - apiGroups: ["kustomize.toolkit.fluxcd.io"]
+    resources: ["kustomizations"]
+    verbs: ["patch"]
+  {{- end }}
+
+  {{- with .Values.rbac.extraRules }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "devops-ai.fullname" . }}
+  labels:
+    {{- include "devops-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mcp-server
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "devops-ai.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "devops-ai.fullname" . }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

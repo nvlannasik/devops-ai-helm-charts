@@ -1,0 +1,199 @@
+# The dev cluster, expressed as chart values.
+#
+# This mirrors what gitops-devops-ai-manifest/apps/dev/applications/ deploys today, so it
+# doubles as the migration reference: everything below already exists in that overlay as
+# three separate HelmReleases with ~170 lines of extraEnvVars between them.
+#
+# Two things are deliberately NOT here:
+#
+#   - Secrets. Every credential is referenced by Secret name and key (see secretEnv in
+#     the subchart values); this file only names them. The Secrets themselves —
+#     devops-agent-secret, llm-api-key-secret, github-token-secret,
+#     aws-rolesanywhere-config — are created outside this chart and are expected to
+#     already exist in the namespace.
+#
+#   - The MCP token. It is in the dev overlay in cleartext, twice. Pass it at install
+#     time (--set global.mcp.authToken=...) or, better, point global.mcp.authTokenSecret
+#     at a Secret. The render fails if neither is set, which is the point.
+#
+# Install:
+#   helm install devops-ai . -n devops-tools \
+#     -f examples/values-dev.yaml \
+#     --set global.mcp.authTokenSecret.name=devops-agent-secret
+
+global:
+  mcp:
+    # MCP_HTTP_URL is derived from these — the agent and the Service cannot drift apart.
+    serviceName: devops-mcp-server
+    namespace: devops-tools
+    port: 3000
+    authTokenSecret:
+      name: devops-agent-secret
+      key: MCP_AUTH_TOKEN
+
+  sqs:
+    requestQueue: "llm-request.fifo"
+    responseQueue: "llm-response.fifo"
+    requestDlq: "llm-request-dlq.fifo"
+    gitopsRequestQueue: "gitops-request.fifo"
+    region: "ap-southeast-1"
+
+  # dev runs its own postgresql and redis as separate Flux HelmReleases. Leave these off
+  # and point the agent at them by hostname below.
+  postgresql:
+    enabled: false
+  redis:
+    enabled: false
+
+devops-ai-agent:
+  enabled: true
+  image:
+    tag: latest
+  env:
+    NODE_ENV: "dev"
+    PORT: "3000"
+
+    LLM_PROVIDER: "router"
+    LLM_BACKEND_1_NAME: "haiku"
+    LLM_BACKEND_1_KIND: "claude"
+    LLM_BACKEND_1_MODEL: "claude-haiku-4-5"
+    LLM_BACKEND_2_NAME: "chatgpt"
+    LLM_BACKEND_2_KIND: "openai-compatible"
+    LLM_BACKEND_2_BASE_URL: "https://api.openai.com/v1"
+    LLM_BACKEND_2_MODEL: "gpt-5-nano-2025-08-07"
+    LLM_BACKEND_3_NAME: "deepseek"
+    LLM_BACKEND_3_KIND: "openai-compatible"
+    LLM_BACKEND_3_BASE_URL: "https://api.deepseek.com"
+    LLM_BACKEND_3_MODEL: "deepseek-v4-flash"
+    LLM_BACKEND_4_NAME: "private-llm"
+    # kind private-llm takes the SQS path — the render fails if the worker is disabled.
+    LLM_BACKEND_4_KIND: "private-llm"
+    LLM_ROUTE_HEAVY: "private-llm,chatgpt,haiku"
+    LLM_ROUTE_LIGHT: "deepseek"
+
+    MCP_TRANSPORT: "http"
+    SQS_POLL_WAIT_SECONDS: "20"
+    SQS_LLM_TIMEOUT_SECONDS: "240"
+
+    MEMORY_BACKEND: "redis"
+    # External Redis, not deployed by this release.
+    REDIS_HOST: "devops-agent-redis.devops-tools"
+    REDIS_PORT: "6379"
+    REDIS_DB: "0"
+    REDIS_TLS: "false"
+
+    # External Postgres, not deployed by this release.
+    DB_HOST: "postgresql.postgresql"
+    DB_PORT: "5432"
+    DB_NAME: "devops_agent"
+    DB_USERNAME: "postgres"
+    DB_SSL_MODE: "disable"
+
+    MAX_CONCURRENT_INVESTIGATIONS: "5"
+    DASHBOARD_ENABLED: "true"
+    DASHBOARD_PORT: "3001"
+    SLACK_ALERT_CHANNEL: "C09R0F6F891"
+    SLACK_ONCALL_USERS: "U03RCHDHUH5"
+    SLACK_APPROVER_USERS: "U0BGYRD1EPM"
+
+    GITOPS_REMEDIATION_ENABLED: "true"
+    SQS_GITOPS_TIMEOUT_SECONDS: "240"
+
+    # AWS IAM Roles Anywhere: the workload cert mounted below.
+    CERT_PATH: "/certs/tls.crt"
+    CERT_KEY_PATH: "/certs/tls.key"
+
+  secretEnv:
+    SLACK_BOT_TOKEN: { secret: devops-agent-secret, key: SLACK_BOT_TOKEN }
+    SLACK_SIGNING_SECRET: { secret: devops-agent-secret, key: SLACK_SIGNING_SECRET }
+    SLACK_APP_TOKEN: { secret: devops-agent-secret, key: SLACK_APP_TOKEN }
+    ALERT_WEBHOOK_TOKEN: { secret: devops-agent-secret, key: ALERT_WEBHOOK_TOKEN }
+    DB_PASSWORD: { secret: devops-agent-secret, key: DB_PASSWORD }
+    REDIS_PASSWORD: { secret: devops-agent-secret, key: REDIS_PASSWORD }
+    DASHBOARD_PASSWORD: { secret: devops-agent-secret, key: DASHBOARD_PASSWORD, optional: true }
+    LLM_BACKEND_1_KEY: { secret: devops-agent-secret, key: CLAUDE_KEY }
+    LLM_BACKEND_2_KEY: { secret: devops-agent-secret, key: OPENAI_KEY }
+    LLM_BACKEND_3_KEY: { secret: devops-agent-secret, key: DEEPSEEK_KEY }
+    AWS_TRUST_ANCHOR_ARN: { secret: aws-rolesanywhere-config, key: trust-anchor-arn }
+    AWS_ROLESANYWHERE_PROFILE_ARN: { secret: aws-rolesanywhere-config, key: profile-arn }
+    AWS_ROLE_ARN: { secret: aws-rolesanywhere-config, key: role-arn }
+
+  extraVolumes:
+    - name: tmp
+      emptyDir: {}
+    - name: workload-cert
+      secret:
+        secretName: workload-tls
+  extraVolumeMounts:
+    - name: tmp
+      mountPath: /tmp
+    - name: workload-cert
+      mountPath: /certs
+      readOnly: true
+
+devops-mcp-server:
+  enabled: true
+  image:
+    tag: latest
+  env:
+    NODE_ENV: "prod"
+    PORT: "3000"
+    MCP_TRANSPORT: "http"
+    K8S_AUTH_MODE: "incluster"
+    PROMETHEUS_URL: "http://monitoring-prometheus-server.monitoring"
+    LOKI_URL: "http://loki.monitoring.svc.cluster.local:3100"
+    TRACING_BACKEND: "jaeger"
+    TRACING_URL: "http://jaeger-query.observability.svc.cluster.local:16686"
+    # The inner bound on remediation. RBAC below is the outer one; both must allow it.
+    MCP_ENABLE_WRITE_TOOLS: "true"
+    ALLOWED_REMEDIATION_NAMESPACES: "dev-auth,nginx-ingress,default,monitoring,headlamp,sarang-tani,devops-tools,mqtt-broker,oauth2-proxy,flux-system"
+    MAX_SCALE_DELTA: "5"
+  rbac:
+    create: true
+    readOnly: true
+    # Matches MCP_ENABLE_WRITE_TOOLS above. Turning on one without the other gives a
+    # server that either refuses its own tools or is refused by the API server.
+    allowWrite: true
+    allowFluxReconcile: true
+
+devops-llm-worker:
+  # Required here: the agent has a private-llm backend, and GitOps remediation is on.
+  enabled: true
+  image:
+    tag: latest
+  env:
+    LLM_API_FORMAT: "openai"
+    LLM_BASE_URL: "https://api.openai.com/v1"
+    LLM_MODEL: "gpt-5-nano-2025-08-07"
+    LLM_MAX_TOKENS: "16384"
+    LLM_USE_MAX_COMPLETION_TOKENS: "true"
+    SQS_POLL_WAIT_SECONDS: "20"
+    SQS_MAX_MESSAGES: "10"
+  secretEnv:
+    LLM_API_KEY: { secret: llm-api-key-secret, key: api-key }
+    AWS_TRUST_ANCHOR_ARN: { secret: aws-rolesanywhere-config, key: trust-anchor-arn }
+    AWS_ROLESANYWHERE_PROFILE_ARN: { secret: aws-rolesanywhere-config, key: profile-arn }
+    AWS_ROLE_ARN: { secret: aws-rolesanywhere-config, key: role-arn }
+  gitops:
+    enabled: true
+    repo: "nvlannasik/gitops-devops-ai-manifest"
+    branch: "main"
+    apiUrl: "https://api.github.com"
+    tokenSecret:
+      name: github-token-secret
+      key: token
+  # dev mounts a cert issued elsewhere rather than having cert-manager issue one here.
+  certificate:
+    enabled: false
+  extraVolumes:
+    - name: tmp
+      emptyDir: {}
+    - name: workload-cert
+      secret:
+        secretName: workload-tls
+  extraVolumeMounts:
+    - name: tmp
+      mountPath: /tmp
+    - name: workload-cert
+      mountPath: /certs
+      readOnly: true
