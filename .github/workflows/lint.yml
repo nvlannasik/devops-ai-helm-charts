@@ -11,8 +11,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
 
+      # MCP is configured per service, not under global — the contract is between exactly
+      # those two, and each states its own half. That is why the token is set twice here.
       - name: helm lint
-        run: helm lint charts/devops-ai-stack --set global.mcp.authToken=ci
+        run: |
+          helm lint charts/devops-ai-stack \
+            --set devops-ai-agent.mcp.authToken=ci \
+            --set devops-mcp-server.mcp.authToken=ci
 
       # The dev example is the migration reference for a real cluster. If it stops
       # rendering, it has drifted from the chart and is worse than no example.
@@ -21,15 +26,78 @@ jobs:
           helm template devops-ai charts/devops-ai-stack \
             -n devops-tools -f examples/values-dev.yaml > /dev/null
 
+      # The prod example exists to exercise the forks dev never takes: irsa, a GitHub App,
+      # a private-llm backend, both bundled subcharts. Assert the outputs of those forks,
+      # not just the exit code — the point of the file is that those paths render.
+      - name: render the prod example
+        run: |
+          set -eu
+          out="${TMPDIR:-/tmp}/prod.yaml"
+          helm template devops-ai charts/devops-ai-stack \
+            -n devops-tools -f examples/values-prod.yaml > "$out"
+          # The App flow, and no PAT beside it: the worker prefers the PAT when both are
+          # present, so a GITHUB_TOKEN here would silently disable everything below.
+          # The absence checks are written `! grep` rather than `grep && exit 1` so that
+          # `set -e` cannot turn a passing assertion into an early, green exit.
+          grep -q "name: GITHUB_APP_ID" "$out"
+          grep -q "name: GITHUB_APP_INSTALLATION_ID" "$out"
+          grep -q "GITHUB_APP_PRIVATE_KEY_FILE" "$out"
+          grep -q "defaultMode: 0400" "$out"
+          ! grep -q "name: GITHUB_TOKEN" "$out"
+          # irsa: the annotation on both AWS workloads, and none of the other modes' inputs.
+          test "$(grep -c 'eks.amazonaws.com/role-arn' "$out")" -eq 2
+          ! grep -qE 'CERT_PATH|AWS_TRUST_ANCHOR_ARN|AWS_ACCESS_KEY_ID' "$out"
+          # Both hosts derived from the bundled subcharts rather than written by hand.
+          grep -q 'value: "devops-ai-postgresql"' "$out"
+          grep -q 'value: "devops-ai-redis-master"' "$out"
+
       - name: render with everything enabled
         run: |
           helm template devops-ai charts/devops-ai-stack \
-            --set global.mcp.authToken=ci \
+            --set devops-ai-agent.mcp.authToken=ci \
+            --set devops-mcp-server.mcp.authToken=ci \
             --set global.postgresql.enabled=true \
             --set global.redis.enabled=true \
             --set devops-llm-worker.enabled=true \
+            --set devops-llm-worker.llm.baseUrl=http://llm/v1 \
+            --set devops-llm-worker.llm.model=m \
             --set devops-llm-worker.gitops.enabled=true \
             --set devops-llm-worker.gitops.repo=org/repo > /dev/null
+
+      # The value objects are the interface most people touch, so a backend that silently
+      # renders no env is worse than one that fails. Assert the vars, not just the exit
+      # code: the indices must be contiguous from 1 or the agent's registry stops reading
+      # at the first gap.
+      - name: the LLM backend list renders contiguous indices
+        run: |
+          set -eu
+          helm template t charts/devops-ai-stack \
+            --set devops-ai-agent.mcp.authToken=ci \
+            --set devops-mcp-server.mcp.authToken=ci \
+            --set devops-llm-worker.enabled=true \
+            --set devops-llm-worker.llm.baseUrl=http://llm/v1 \
+            --set devops-llm-worker.llm.model=m \
+            --set devops-ai-agent.llm.provider=router \
+            --set 'devops-ai-agent.llm.backends[0].name=light' \
+            --set 'devops-ai-agent.llm.backends[0].kind=openai-compatible' \
+            --set 'devops-ai-agent.llm.backends[0].baseUrl=http://x/v1' \
+            --set 'devops-ai-agent.llm.backends[1].name=heavy' \
+            --set 'devops-ai-agent.llm.backends[1].kind=claude' \
+            --set 'devops-ai-agent.llm.backends[1].existingSecret=llm-keys' \
+            --set 'devops-ai-agent.llm.backends[2].name=priv' \
+            --set 'devops-ai-agent.llm.backends[2].kind=private-llm' \
+            --set 'devops-ai-agent.llm.routes.heavy[0]=heavy' \
+            --set 'devops-ai-agent.llm.routes.light[0]=light' \
+            -s charts/devops-ai-agent/templates/deployment.yaml > "${TMPDIR:-/tmp}/backends.yaml"
+          out="${TMPDIR:-/tmp}/backends.yaml"
+          for n in 1 2 3; do
+            grep -q "name: LLM_BACKEND_${n}_NAME" "$out"
+          done
+          grep -q "name: LLM_BACKEND_4_NAME" "$out" && exit 1
+          # existingSecret alone is enough: the key defaults to the var's own name.
+          grep -q "name: LLM_BACKEND_2_KEY" "$out"
+          grep -q 'value: "heavy"' "$out"
+          grep -q "name: LLM_ROUTE_LIGHT" "$out"
 
       # The cross-service checks are the reason this chart exists, so a silent
       # regression in them is the failure that matters most. Each case below MUST fail
@@ -40,7 +108,9 @@ jobs:
           fails=0
           expect_fail() {
             desc="$1"; shift
-            if helm template t charts/devops-ai-stack --set global.mcp.authToken=ci "$@" >/dev/null 2>&1; then
+            if helm template t charts/devops-ai-stack \
+                 --set devops-ai-agent.mcp.authToken=ci \
+                 --set devops-mcp-server.mcp.authToken=ci "$@" >/dev/null 2>&1; then
               echo "NOT CAUGHT: $desc"
               fails=$((fails + 1))
             else
@@ -48,24 +118,277 @@ jobs:
             fi
           }
 
+          # A backend list that is valid apart from the one thing each case breaks, so a
+          # case cannot pass for the wrong reason.
+          ROUTER="--set devops-ai-agent.llm.provider=router
+                  --set devops-ai-agent.llm.backends[0].name=b1
+                  --set devops-ai-agent.llm.backends[0].kind=claude
+                  --set devops-ai-agent.llm.routes.heavy[0]=b1"
+
           expect_fail "MCP token mismatch" \
-            --set devops-ai-agent.env.MCP_AUTH_TOKEN=a --set devops-mcp-server.env.MCP_AUTH_TOKEN=b
+            --set devops-ai-agent.mcp.authToken=a --set devops-mcp-server.mcp.authToken=b
+          expect_fail "MCP tokens read from two different Secrets" \
+            --set devops-ai-agent.mcp.authTokenSecret.name=s1 \
+            --set devops-mcp-server.mcp.authTokenSecret.name=s2
+          # Through the block, and through the escape hatch under the name the SERVER
+          # reads. This used to set env.MCP_TRANSPORT, which the server does not read —
+          # so it asserted that the chart catches a variable nothing acts on, and passed
+          # while the real mismatch went through.
           expect_fail "MCP transport mismatch" \
-            --set devops-mcp-server.env.MCP_TRANSPORT=stdio
+            --set devops-mcp-server.mcp.transport=stdio
+          expect_fail "an MCP transport mismatch set through the env escape hatch" \
+            --set devops-mcp-server.env.TRANSPORT=stdio
+          expect_fail "an agent dialling an MCP Service this release does not create" \
+            --set devops-ai-agent.mcp.serviceName=somewhere-else
+          expect_fail "an agent dialling a port the MCP Service does not listen on" \
+            --set devops-ai-agent.mcp.port=9999
+          expect_fail "global.mcp, which moved into each service" \
+            --set global.mcp.authToken=x
+
+          # The two bounds on remediation, which live in different subsystems and can only
+          # be compared here.
+          expect_fail "write tools registered without the RBAC to execute them" \
+            --set devops-mcp-server.writeTools.enabled=true \
+            --set 'devops-mcp-server.writeTools.allowedNamespaces[0]=apps'
+          expect_fail "cluster-wide write RBAC with no tool behind it" \
+            --set devops-mcp-server.rbac.allowWrite=true
+          expect_fail "write tools enabled with an empty namespace allowlist" \
+            --set devops-mcp-server.writeTools.enabled=true \
+            --set devops-mcp-server.rbac.allowWrite=true
+          expect_fail "a tracing backend the server does not implement" \
+            --set devops-mcp-server.tracing.backend=zipkin
+          expect_fail "kubeconfig auth with no kubeconfig to read" \
+            --set devops-mcp-server.kubernetes.authMode=kubeconfig
+          expect_fail "in-cluster auth with the ServiceAccount token unmounted" \
+            --set devops-mcp-server.serviceAccount.automountServiceAccountToken=false
           expect_fail "SQS response queue mismatch" \
             --set devops-llm-worker.enabled=true \
+            --set devops-llm-worker.llm.baseUrl=http://llm/v1 \
+            --set devops-llm-worker.llm.model=m \
             --set devops-llm-worker.env.SQS_RESPONSE_QUEUE_NAME=other.fifo
           expect_fail "private-llm backend with no worker" \
-            --set devops-ai-agent.env.LLM_BACKEND_1_KIND=private-llm
+            --set 'devops-ai-agent.llm.backends[0].name=priv' \
+            --set 'devops-ai-agent.llm.backends[0].kind=private-llm'
+          expect_fail "an LLM backend kind the agent's registry does not know" \
+            --set 'devops-ai-agent.llm.backends[0].name=b1' \
+            --set 'devops-ai-agent.llm.backends[0].kind=gemini'
+          expect_fail "two LLM backends answering to the same name" \
+            --set 'devops-ai-agent.llm.backends[0].name=b1' \
+            --set 'devops-ai-agent.llm.backends[0].kind=claude' \
+            --set 'devops-ai-agent.llm.backends[1].name=b1' \
+            --set 'devops-ai-agent.llm.backends[1].kind=claude'
+          expect_fail "an openai-compatible backend with no endpoint to call" \
+            --set 'devops-ai-agent.llm.backends[0].name=b1' \
+            --set 'devops-ai-agent.llm.backends[0].kind=openai-compatible'
+          expect_fail "a route naming a backend that was never declared" $ROUTER \
+            --set 'devops-ai-agent.llm.routes.heavy[0]=nope'
+          # Failover is up-only, so the two lanes have to be disjoint: a backend in both
+          # is an ordering that means nothing, not a redundancy.
+          expect_fail "one backend in both the heavy and light lanes" $ROUTER \
+            --set 'devops-ai-agent.llm.routes.light[0]=b1'
+          expect_fail "router with no backends to route between" \
+            --set devops-ai-agent.llm.provider=router
+          expect_fail "redis turned on with no host to reach it at" \
+            --set devops-ai-agent.redis.enabled=true
           expect_fail "gitops on the agent with no worker" \
+            --set devops-ai-agent.gitops.enabled=true
+          # Same check reached through the escape hatch. `env` wins over the object, so
+          # every check that reads an object has to read it that way too — otherwise this
+          # file rejects a release that would have deployed correctly.
+          expect_fail "gitops turned on through the env escape hatch, no worker" \
             --set devops-ai-agent.env.GITOPS_REMEDIATION_ENABLED=true
-          expect_fail "unknown LLM_API_FORMAT" \
-            --set devops-llm-worker.enabled=true --set devops-llm-worker.env.LLM_API_FORMAT=gemini
+          # A worker that is valid apart from the one thing each case breaks. baseUrl and
+          # model are required now, so without these every case below would fail on the
+          # missing endpoint instead of on what it means to test.
+          WORKER="--set devops-llm-worker.enabled=true
+                  --set devops-llm-worker.llm.baseUrl=http://llm/v1
+                  --set devops-llm-worker.llm.model=m"
+          GITOPS="--set devops-llm-worker.gitops.enabled=true
+                  --set devops-llm-worker.gitops.repo=org/repo"
+          # Empty, not =null: Helm reads null as "unset" and values.yaml's PAT comes back.
+          NO_PAT="--set devops-llm-worker.gitops.auth.tokenSecret.name="
+
+          expect_fail "unknown LLM_API_FORMAT" $WORKER \
+            --set devops-llm-worker.llm.apiFormat=gemini
+          expect_fail "a worker with no LLM endpoint to call" \
+            --set devops-llm-worker.enabled=true \
+            --set devops-llm-worker.llm.model=m
+          expect_fail "a worker with an endpoint but no model to ask for" \
+            --set devops-llm-worker.enabled=true \
+            --set devops-llm-worker.llm.baseUrl=http://llm/v1
+          # These three reach /v1/chat/completions only. On the Anthropic path they are
+          # unknown fields, and an endpoint that validates its body 400s every request.
+          expect_fail "an OpenAI-only seed under the Anthropic wire format" $WORKER \
+            --set devops-llm-worker.llm.apiFormat=anthropic \
+            --set devops-llm-worker.llm.sampling.seed=7
+          expect_fail "max_completion_tokens under the Anthropic wire format" $WORKER \
+            --set devops-llm-worker.llm.apiFormat=anthropic \
+            --set devops-llm-worker.llm.useMaxCompletionTokens=true
+          expect_fail "a reasoning effort the API does not accept" $WORKER \
+            --set devops-llm-worker.llm.sampling.reasoningEffort=extreme
+          # The worker DERIVES its own gitops flag from (credential && repo), so each of
+          # these boots, reports gitops disabled, and drops the agent's proposals.
+          expect_fail "the GitOps bridge with no repo to open PRs against" $WORKER \
+            --set devops-llm-worker.gitops.enabled=true
+          expect_fail "the GitOps bridge with no GitHub credentials" $WORKER $GITOPS $NO_PAT
+          expect_fail "a GitHub App that would never be used, behind a PAT" $WORKER $GITOPS \
+            --set devops-llm-worker.gitops.auth.githubApp.appId=1
+          expect_fail "a GitHub App with no installation to redeem its JWT at" \
+            $WORKER $GITOPS $NO_PAT \
+            --set devops-llm-worker.gitops.auth.githubApp.appId=1
+          expect_fail "a GitHub App with no private key to sign with" \
+            $WORKER $GITOPS $NO_PAT \
+            --set devops-llm-worker.gitops.auth.githubApp.appId=1 \
+            --set devops-llm-worker.gitops.auth.githubApp.installationId=2
+          expect_fail "a GitHub Enterprise host with no /api/v3 on it" $WORKER $GITOPS \
+            --set devops-llm-worker.gitops.apiUrl=https://ghe.corp.example
           expect_fail "bundled postgres with no database name" \
             --set global.postgresql.enabled=true --set postgresql.auth.database=null
+          expect_fail "the agent's database name disagrees with the bundled database" \
+            --set global.postgresql.enabled=true --set devops-ai-agent.database.name=other
           expect_fail "DB_NAME disagrees with the bundled database" \
             --set global.postgresql.enabled=true --set devops-ai-agent.env.DB_NAME=other
           expect_fail "postgresql.enabled set at the root, where it does nothing" \
             --set postgresql.enabled=true
+          expect_fail "global.sqs.region, which moved to global.aws.region" \
+            --set global.sqs.region=ap-southeast-1
+          # An empty name, not --set ...=null: Helm reads null as "unset" and the
+          # default from values.yaml comes back, so that case would test nothing.
+          expect_fail "iam-anywhere with no configSecret to read the ARNs from" \
+            --set 'global.aws.rolesAnywhere.configSecret.name='
+          expect_fail "this chart issuing a certificate with no issuer to sign it" \
+            --set global.aws.certificate.create=true
+          expect_fail "an authMode entrypoint.sh does not implement" \
+            --set global.aws.authMode=sso
+          expect_fail "env mode with no Secret to read the access key from" \
+            --set global.aws.authMode=env
+          expect_fail "irsa with no role for the annotation to name" \
+            --set global.aws.authMode=irsa
+          expect_fail "irsa where only one of the two services names a role" \
+            --set global.aws.authMode=irsa \
+            --set devops-llm-worker.enabled=true \
+            --set devops-llm-worker.llm.baseUrl=http://llm/v1 \
+            --set devops-llm-worker.llm.model=m \
+            --set devops-ai-agent.serviceAccount.roleArn=arn:aws:iam::1:role/agent
+          expect_fail "a per-service role under a mode that never renders the annotation" \
+            --set devops-ai-agent.serviceAccount.roleArn=arn:aws:iam::1:role/agent
+          expect_fail "a role on the MCP server, which uses no AWS" \
+            --set global.aws.authMode=irsa \
+            --set global.aws.irsa.roleArn=arn:aws:iam::1:role/r \
+            --set devops-mcp-server.serviceAccount.roleArn=arn:aws:iam::1:role/mcp
+          expect_fail "an access key left behind under a mode that never reads it" \
+            --set global.aws.authMode=irsa \
+            --set global.aws.irsa.roleArn=arn:aws:iam::1:role/r \
+            --set global.aws.credentialsSecret.name=aws-keys
+          expect_fail "a certificate issued under a mode that never mounts it" \
+            --set global.aws.authMode=instance-profile \
+            --set global.aws.certificate.create=true
 
           test "$fails" -eq 0
+
+      # AWS_AUTH_MODE is a contract with entrypoint.sh inside the images: it is what the
+      # script dispatches on, and its own default (iam-anywhere) exits before Node starts
+      # when the ARNs are absent. A mode that renders its credentials without rendering
+      # the mode is therefore a CrashLoop, which is what this chart got wrong once.
+      - name: every auth mode renders its own mode and its own credentials
+        run: |
+          set -eu
+          render() {
+            mode="$1"; shift
+            helm template t charts/devops-ai-stack \
+              --set devops-ai-agent.mcp.authToken=ci \
+              --set devops-mcp-server.mcp.authToken=ci \
+              --set devops-llm-worker.enabled=true \
+              --set devops-llm-worker.llm.baseUrl=http://llm/v1 \
+              --set devops-llm-worker.llm.model=m \
+              --set "global.aws.authMode=$mode" "$@" \
+              -s charts/devops-ai-agent/templates/deployment.yaml \
+              -s charts/devops-llm-worker/templates/deployment.yaml \
+              > "/tmp/mode-$mode.yaml"
+            test -s "/tmp/mode-$mode.yaml"
+            # Both Deployments, so a helper wired into one side only is caught.
+            test "$(grep -c "name: AWS_AUTH_MODE" "/tmp/mode-$mode.yaml")" -eq 2
+            test "$(grep -c "value: \"$mode\"" "/tmp/mode-$mode.yaml")" -eq 2
+          }
+          absent() {
+            file="$1"; pattern="$2"; desc="$3"
+            if grep -qE "$pattern" "$file"; then
+              echo "$desc"; grep -nE "$pattern" "$file"; exit 1
+            fi
+          }
+
+          render iam-anywhere
+          grep -q "AWS_TRUST_ANCHOR_ARN" /tmp/mode-iam-anywhere.yaml
+          grep -q "CERT_PATH" /tmp/mode-iam-anywhere.yaml
+
+          render irsa --set global.aws.irsa.roleArn=arn:aws:iam::1:role/r
+          absent /tmp/mode-irsa.yaml 'AWS_TRUST_ANCHOR_ARN|CERT_PATH|AWS_ACCESS_KEY_ID|aws-workload-cert' \
+            "irsa rendered credentials belonging to another mode:"
+
+          render env --set global.aws.credentialsSecret.name=aws-keys
+          grep -q "AWS_ACCESS_KEY_ID" /tmp/mode-env.yaml
+          absent /tmp/mode-env.yaml 'AWS_TRUST_ANCHOR_ARN|CERT_PATH|aws-workload-cert' \
+            "env rendered credentials belonging to another mode:"
+
+          render instance-profile
+          absent /tmp/mode-instance-profile.yaml 'AWS_TRUST_ANCHOR_ARN|CERT_PATH|AWS_ACCESS_KEY_ID|aws-workload-cert' \
+            "instance-profile rendered credentials it never reads:"
+
+          # The IRSA annotation goes on both ServiceAccounts and nowhere else — in
+          # particular not on the MCP server's, which holds Kubernetes credentials.
+          helm template t charts/devops-ai-stack \
+            --set devops-ai-agent.mcp.authToken=ci \
+            --set devops-mcp-server.mcp.authToken=ci \
+            --set devops-llm-worker.enabled=true \
+            --set devops-llm-worker.llm.baseUrl=http://llm/v1 \
+            --set devops-llm-worker.llm.model=m \
+            --set global.aws.authMode=irsa \
+            --set global.aws.irsa.roleArn=arn:aws:iam::1:role/r > /tmp/irsa-shared.yaml
+          test "$(grep -c 'eks.amazonaws.com/role-arn' /tmp/irsa-shared.yaml)" -eq 2
+
+          # A per-service role overrides the shared one, and reaches the right service.
+          # Rendered one ServiceAccount at a time: the annotation sits ~10 lines below the
+          # name, so a grep for both in one file proves nothing about which got which.
+          split() {
+            helm template t charts/devops-ai-stack \
+              --set devops-ai-agent.mcp.authToken=ci \
+              --set devops-mcp-server.mcp.authToken=ci \
+              --set devops-llm-worker.enabled=true \
+              --set devops-llm-worker.llm.baseUrl=http://llm/v1 \
+              --set devops-llm-worker.llm.model=m \
+              --set global.aws.authMode=irsa \
+              --set global.aws.irsa.roleArn=arn:aws:iam::1:role/shared \
+              --set devops-ai-agent.serviceAccount.roleArn=arn:aws:iam::1:role/agent \
+              -s "charts/$1/templates/serviceaccount.yaml"
+          }
+          split devops-ai-agent   | grep -q 'role-arn: "arn:aws:iam::1:role/agent"'
+          split devops-llm-worker | grep -q 'role-arn: "arn:aws:iam::1:role/shared"'
+
+          # Merged with, not replaced by, the free-form annotations.
+          helm template t charts/devops-ai-stack \
+            --set devops-ai-agent.mcp.authToken=ci \
+            --set devops-mcp-server.mcp.authToken=ci \
+            --set global.aws.authMode=irsa \
+            --set devops-ai-agent.serviceAccount.roleArn=arn:aws:iam::1:role/agent \
+            --set devops-ai-agent.serviceAccount.annotations.team=platform \
+            -s charts/devops-ai-agent/templates/serviceaccount.yaml > /tmp/irsa-merge.yaml
+          grep -q 'team: platform' /tmp/irsa-merge.yaml
+          grep -q 'role/agent' /tmp/irsa-merge.yaml
+
+      # The MCP server holds Kubernetes credentials, never AWS ones. If it starts
+      # rendering an AWS env var or the workload-cert mount, a helper has been wired into
+      # shared boilerplate again — which is how it got one the first time.
+      - name: the mcp-server stays out of AWS
+        run: |
+          helm template t charts/devops-ai-stack \
+            --set devops-ai-agent.mcp.authToken=ci \
+            --set devops-mcp-server.mcp.authToken=ci \
+            -s charts/devops-mcp-server/templates/deployment.yaml \
+            > /tmp/mcp.yaml
+          # An empty file would make the grep below pass without proving anything.
+          test -s /tmp/mcp.yaml
+          if grep -qE 'AWS_|CERT_PATH|aws-workload-cert' /tmp/mcp.yaml; then
+            echo "mcp-server rendered AWS configuration it has no use for:"
+            grep -nE 'AWS_|CERT_PATH|aws-workload-cert' /tmp/mcp.yaml
+            exit 1
+          fi

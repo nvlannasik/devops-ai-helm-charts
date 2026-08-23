@@ -1,0 +1,352 @@
+# A production shape, and the paths values-dev.yaml does not take.
+#
+# values-dev.yaml mirrors one real cluster: IAM Roles Anywhere, hosted LLM APIs over the
+# public internet, a PAT for GitHub, Postgres and Redis already running as their own Flux
+# releases. That covers the migration, but it leaves half the chart's surface unexercised.
+# This file takes the other half of every fork:
+#
+#   dev                          here
+#   ---------------------------  ------------------------------------------------
+#   authMode: iam-anywhere       authMode: irsa, one role per workload
+#   certificate.create: false    (no certificate — IRSA needs none)
+#   hosted APIs, direct calls    a private-llm backend over SQS to llm-worker
+#   GitHub PAT                   a GitHub App, private key mounted as a file
+#   external Postgres/Redis      the bundled subcharts
+#   no ingress                   the dashboard behind one, over TLS
+#
+# It is a template, not a cluster: every ARN, hostname and Secret name below is a
+# placeholder. Read it for the SHAPE of each choice, then substitute.
+#
+# Install:
+#   helm install devops-ai . -n devops-tools -f examples/values-prod.yaml
+
+global:
+  # Queue names are one contract with two sides. Written once here, rendered into both
+  # the agent and the worker; the umbrella refuses to render if they ever disagree.
+  sqs:
+    requestQueue: "prod-llm-request.fifo"
+    responseQueue: "prod-llm-response.fifo"
+    requestDlq: "prod-llm-request-dlq.fifo"
+    gitopsRequestQueue: "prod-gitops-request.fifo"
+
+  aws:
+    region: "ap-southeast-1"
+    # IRSA rather than iam-anywhere: on EKS the pod-identity webhook injects a projected
+    # token, so there is no workload certificate to issue, mount or rotate. entrypoint.sh
+    # dispatches on this value — it is the mode the image actually runs.
+    authMode: "irsa"
+    # No rolesAnywhere and no certificate block: under irsa the chart rejects them rather
+    # than rendering credentials nothing reads.
+
+  # Bundled backing services. Both are subchart switches and both live under `global`
+  # because the agent has to see them to derive DB_HOST and REDIS_HOST — setting
+  # `postgresql.enabled` at the root instead is a no-op, and the chart fails on it.
+  postgresql:
+    enabled: true
+  redis:
+    enabled: true
+
+# Bitnami values, passed through. auth.database is the load-bearing one: the chart creates
+# a database only when it is set, and only on FIRST init of an empty volume. Migrations
+# create tables, never the database — a reused PVC needs a one-time manual CREATE DATABASE.
+postgresql:
+  auth:
+    database: "devops_agent"
+    username: "postgres"
+    existingSecret: "devops-agent-secret"
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+
+redis:
+  auth:
+    enabled: true
+    existingSecret: "devops-agent-secret"
+    existingSecretPasswordKey: "REDIS_PASSWORD"
+
+devops-ai-agent:
+  enabled: true
+  replicaCount: 2
+  image:
+    # Pinned by digest, not by tag: `latest` in dev is a convenience, in prod it is a
+    # rollout you cannot reproduce. The digest wins over tag when both are set.
+    tag: "1.0.0"
+    digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+  serviceAccount:
+    # One role per workload. The agent WRITES to SQS; the worker reads it, calls the LLM
+    # and holds the GitHub credentials — a single shared role would grant each of them the
+    # other's permissions. global.aws.irsa.roleArn exists as a fallback for clusters that
+    # have not split them yet; prefer this.
+    roleArn: "arn:aws:iam::123456789012:role/devops-ai-agent"
+
+  mcp:
+    transport: "http"
+    serviceName: "devops-mcp-server"
+    namespace: "devops-tools"
+    port: 3000
+    # Written twice — here and under devops-mcp-server.mcp — because the contract belongs
+    # to those two services and not to `global`. Both point at the same Secret key, and
+    # _validate.tpl compares the two halves.
+    authTokenSecret:
+      name: devops-agent-secret
+      key: MCP_AUTH_TOKEN
+
+  slack:
+    alertChannel: "C00000000000"
+    oncallUsers: ["U00000000000", "U00000000001"]
+    # Distinct from oncallUsers here: whoever is paged is not automatically who may approve
+    # a write to the cluster. Left empty it falls back to oncallUsers.
+    approverUsers: ["U00000000002"]
+    existingSecret: devops-agent-secret
+
+  alertWebhook:
+    existingSecret: devops-agent-secret
+
+  llm:
+    provider: "router"
+    backends:
+      # Order IS the LLM_BACKEND_<N> index order, and the registry stops reading at the
+      # first gap — a list cannot introduce one.
+      - name: private-llm
+        # The SQS path: no key here, because llm-worker holds it. The render fails if the
+        # worker is disabled — nothing would ever answer these messages.
+        kind: private-llm
+        # Lets the router skip this backend when a prompt will not fit its window, rather
+        # than sending one that comes back truncated.
+        contextTokens: 32768
+      - name: sonnet
+        # The heavy lane's fallback: a hosted model reached only when the private one is
+        # down. Bigger than the light backend on purpose — falling back to something
+        # weaker mid-investigation is a worse answer, not a cheaper one.
+        kind: claude
+        model: claude-sonnet-4-5
+        existingSecret: devops-agent-secret
+        apiKeyKey: CLAUDE_KEY
+      - name: haiku
+        kind: claude
+        model: claude-haiku-4-5
+        existingSecret: devops-agent-secret
+        apiKeyKey: CLAUDE_KEY
+    routes:
+      # Failover is up-only: light never falls back onto heavy, so a cheap call cannot
+      # quietly become an expensive one. The chart enforces that by refusing a backend
+      # named in both lanes — the two lists have to be disjoint, not merely ordered.
+      heavy: [private-llm, sonnet]
+      light: [haiku]
+    sqs:
+      timeoutSeconds: 240
+      pollWaitSeconds: 20
+
+  investigation:
+    timeoutSeconds: 300
+    maxConcurrent: 10
+
+  gitops:
+    enabled: true
+    timeoutSeconds: 240
+    # "Did that actually fix it?" — scheduled in Postgres, so the check survives the pod
+    # that approved the action. 300s because a rolling update is still converging before
+    # then and a half-restarted workload reads as "not fixed" regardless of the remediation.
+    verifyDelaySeconds: 300
+    verifyPollSeconds: 30
+
+  # No host and no port: both are derived from the bundled subcharts above. Naming a host
+  # here is how you point at a Postgres this release did not deploy.
+  database:
+    name: "devops_agent"
+    username: "postgres"
+    sslMode: "require"
+    existingSecret: devops-agent-secret
+
+  redis:
+    enabled: true
+    existingSecret: devops-agent-secret
+
+  dashboard:
+    enabled: true
+    port: 3001
+    # Behind TLS here, so the Secure cookie is correct. Over plain HTTP a browser drops it
+    # in silence and the login page just keeps reappearing.
+    cookieSecure: true
+    existingSecret: devops-agent-secret
+
+  # The dashboard, published. Port 3000 is the Slack/webhook port and is deliberately NOT
+  # exposed: Alertmanager reaches it in-cluster.
+  ingress:
+    enabled: true
+    className: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+    hosts:
+      - host: devops-ai.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+            port: 3001
+    tls:
+      - secretName: devops-ai-dashboard-tls
+        hosts:
+          - devops-ai.example.com
+
+  resources:
+    limits:
+      memory: 1Gi
+    requests:
+      cpu: 200m
+      memory: 512Mi
+
+devops-mcp-server:
+  enabled: true
+  replicaCount: 2
+  image:
+    tag: "1.0.0"
+    digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+  # No serviceAccount.roleArn: this workload never calls an AWS API (see aws.enabled in its
+  # values.yaml). It holds Kubernetes credentials and nothing else.
+
+  mcp:
+    transport: "http"
+    authTokenSecret:
+      name: devops-agent-secret
+      key: MCP_AUTH_TOKEN
+
+  kubernetes:
+    authMode: "incluster"
+
+  prometheus:
+    url: "http://prometheus-server.monitoring:9090"
+    # A protected upstream: the username and password are read as a PAIR, so naming one
+    # without the other emits neither.
+    existingSecret: observability-basic-auth
+    usernameKey: PROMETHEUS_USERNAME
+    passwordKey: PROMETHEUS_PASSWORD
+  # Its own Alertmanager here, rather than Prometheus's alerts endpoint as in dev.
+  alertmanager:
+    url: "http://alertmanager.monitoring:9093"
+  loki:
+    url: "http://loki.monitoring:3100"
+    existingSecret: observability-basic-auth
+    usernameKey: LOKI_USERNAME
+    passwordKey: LOKI_PASSWORD
+  tracing:
+    # tempo | jaeger — the QUERY API this talks to, not the collector.
+    backend: "tempo"
+    url: "http://tempo.observability:3200"
+
+  limits:
+    k8sListLimit: 200
+    upstreamTimeoutSeconds: 30
+
+  writeTools:
+    enabled: true
+    # An ALLOWLIST. Empty refuses everything, which is the same failure as the tools being
+    # unregistered — the agent caches listTools() at startup and would keep choosing a tool
+    # that is always refused. kube-system, kube-public, kube-node-lease and flux-system are
+    # refused by the server whatever this says; Flux-managed workloads go through
+    # flux_reconcile and the GitOps PR flow instead.
+    allowedNamespaces:
+      - apps
+      - payments
+      - devops-tools
+    maxScaleDelta: 3
+
+  rbac:
+    create: true
+    readOnly: true
+    # The OUTER bound, and it is cluster-wide. writeTools above is the inner one; narrowing
+    # the namespace list does not narrow what the ServiceAccount may do. Enabling either
+    # without the other fails the render.
+    allowWrite: true
+    allowFluxReconcile: true
+
+  resources:
+    limits:
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+devops-llm-worker:
+  # Required: the agent has a private-llm backend AND GitOps remediation on. Either alone
+  # would fail the render with the worker disabled.
+  enabled: true
+  replicaCount: 2
+  image:
+    tag: "1.0.0"
+    digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+  serviceAccount:
+    # Its own role, separate from the agent's — this one reads the queues, calls the LLM
+    # endpoint, and is the only workload holding GitHub credentials.
+    roleArn: "arn:aws:iam::123456789012:role/devops-llm-worker"
+
+  llm:
+    # The WIRE format, not the vendor: a self-hosted model behind vLLM, LiteLLM or any
+    # OpenAI-compatible gateway is "openai".
+    apiFormat: "openai"
+    baseUrl: "http://vllm.llm.svc.cluster.local:8000/v1"
+    model: "qwen2.5-coder-32b-instruct"
+    maxTokens: 16384
+    sampling:
+      temperature: 0.2
+      topP: 0.95
+      # OpenAI-path only. Under apiFormat "anthropic" the chart rejects these rather than
+      # rendering them: /v1/messages answers 400 to an unknown field, so it is not a silent
+      # no-op — it is every message failing.
+      seed: 42
+    # No existingSecret: a self-hosted endpoint with no auth is the point of this path.
+    # The app defaults the key to the literal "none".
+    existingSecret: ""
+
+  sqs:
+    pollWaitSeconds: 20
+    maxMessages: 10
+    # Bounded so one worker cannot open more concurrent LLM calls than the endpoint will
+    # serve. Two replicas means twice this in flight.
+    maxConcurrency: 5
+    # Must exceed the slowest generation plus the worker's own retry, or SQS redelivers a
+    # message that is still being worked on.
+    visibilityTimeoutSeconds: 600
+    maxReceiveCount: 3
+
+  gitops:
+    enabled: true
+    # The ONLY repository the PR handler may touch, whatever an investigation proposes.
+    repo: "example-org/gitops-devops-ai-manifest"
+    branch: "main"
+    # GitHub Enterprise serves its REST API under /api/v3. The bare web hostname 404s on
+    # API paths and reads like a missing repository, so the chart requires the suffix.
+    apiUrl: "https://github.example.com/api/v3"
+    # Narrows what a PR may touch to one subtree of that repo.
+    pathPrefix: "apps/prd/"
+    auth:
+      # A GitHub App rather than the PAT dev uses: it exchanges the key for a short-lived
+      # installation token per call, so nothing long-lived sits in the cluster, and it is
+      # not tied to a person who may leave.
+      #
+      # Two different IDs. appId identifies the App; installationId identifies its grant on
+      # THIS org — an App installed nowhere can authenticate and still see no repository.
+      githubApp:
+        appId: "123456"
+        installationId: "78901234"
+        # Mounted as a FILE, 0400. A multi-line PEM survives an env var, but it is also the
+        # one credential here that `kubectl describe pod` would print in full.
+        privateKeySecret:
+          name: github-app-key
+          key: private-key.pem
+        privateKeyMountPath: /github-app
+      # tokenSecret is left unset on purpose: the app prefers the PAT when both are
+      # present, so a leftover one here would silently disable the App flow. The chart
+      # rejects that combination rather than letting it render.
+      tokenSecret:
+        name: ""
+
+  resources:
+    limits:
+      memory: 1Gi
+    requests:
+      cpu: 200m
+      memory: 512Mi
