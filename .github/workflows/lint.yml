@@ -8,8 +8,8 @@ jobs:
   chart:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
 
       # MCP is configured per service, not under global — the contract is between exactly
       # those two, and each states its own half. That is why the token is set twice here.
