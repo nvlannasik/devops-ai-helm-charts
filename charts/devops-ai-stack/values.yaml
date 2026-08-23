@@ -5,28 +5,14 @@
 # a mismatch is caught in CI rather than at 3am in a Slack thread.
 #
 # Anything only one service cares about lives under that service's own key.
+#
+# MCP is the exception, and a deliberate one: it is a contract between exactly two
+# services, and it is configured under each of them — devops-ai-agent.mcp and
+# devops-mcp-server.mcp — rather than here. That means the bearer token is written twice.
+# templates/_validate.tpl compares the two copies and refuses to render when they differ,
+# so what would otherwise be duplication-you-hope-about is duplication-that-is-checked.
 
 global:
-  mcp:
-    # Shared bearer token: the agent sends it, the MCP server compares it. Both sides get
-    # this same value.
-    #
-    # Do NOT put a real token here — values.yaml goes into Git. Use authTokenSecret, or
-    # pass --set at install time.
-    authToken: ""
-    # Read the token from an existing Secret instead. Takes precedence over authToken.
-    authTokenSecret:
-      name: ""
-      key: "MCP_AUTH_TOKEN"
-
-    # Where the agent finds the MCP server. Left empty, it is derived from the
-    # mcp-server Service in this release, which is what you want when both run here.
-    # Set url only when the MCP server lives outside this release.
-    url: ""
-    serviceName: "devops-mcp-server"
-    namespace: ""      # defaults to the release namespace
-    port: 3000
-
   sqs:
     # The agent writes LLM requests here; llm-worker reads them.
     requestQueue: "llm-request.fifo"
@@ -37,7 +23,95 @@ global:
     # Second contract, for the GitOps PR flow. Only used when the agent has
     # GITOPS_REMEDIATION_ENABLED=true.
     gitopsRequestQueue: "gitops-request.fifo"
+    # The region these queues live in is global.aws.region — it is the same region the
+    # credentials are for, so it is stated once, there.
+
+  # How the agent and the worker authenticate to AWS, and where.
+  #
+  # One object because it is one decision: the two services meet on SQS, so they need the
+  # same region and credentials for the same account. Split across both sides it was six
+  # secretEnv entries and two env vars written twice, with nothing to compare them.
+  aws:
     region: "ap-southeast-1"
+
+    # HOW a workload gets credentials. This is rendered as AWS_AUTH_MODE, which
+    # entrypoint.sh in the agent and the worker images dispatches on — the value here and
+    # the four branches in that script are one contract, so this is an enum, not a set of
+    # independent switches. The chart rejects any other value.
+    #
+    #   iam-anywhere      an X.509 workload certificate is exchanged for temporary
+    #                     credentials. entrypoint.sh writes ~/.aws/config with a
+    #                     credential_process calling aws_signing_helper, and REQUIRES the
+    #                     three ARNs plus a readable cert — it exits before Node starts if
+    #                     any is missing. Uses rolesAnywhere and certificate below.
+    #   irsa              EKS. Set irsa.roleArn below and the chart annotates both
+    #                     ServiceAccounts; the EKS pod-identity webhook then injects its
+    #                     own projected token volume and the SDK reads that. It does NOT
+    #                     need automountServiceAccountToken — that governs the default
+    #                     kube-api token, a different volume — so these workloads keep it
+    #                     off and hold no Kubernetes credentials.
+    #   env               a static access key from a Secret. Local dev and CI. Uses
+    #                     credentialsSecret below.
+    #   instance-profile  EC2/ECS instance metadata. Nothing to configure.
+    #
+    # The image defaults to iam-anywhere when AWS_AUTH_MODE is unset; this chart always
+    # states it, because that default fails closed on a cluster that meant to use IRSA.
+    authMode: "iam-anywhere"
+
+    # Only read when authMode is "iam-anywhere".
+    rolesAnywhere:
+      # ARNs come from a Secret you already have — they identify the account, not a
+      # credential, but they do not belong in values.yaml either.
+      configSecret:
+        name: "aws-rolesanywhere-config"
+        trustAnchorArnKey: "trust-anchor-arn"
+        profileArnKey: "profile-arn"
+        roleArnKey: "role-arn"
+
+    # The certificate the exchange presents. Only read when authMode is "iam-anywhere".
+    # Mounted by every workload that talks to AWS, which is why it is issued once here
+    # rather than per subchart.
+    certificate:
+      # Off: mount a Secret that something else issues (the dev cluster does this).
+      # On: this chart asks cert-manager for it, and issuerRef.name becomes required.
+      create: false
+      secretName: "workload-tls"
+      mountPath: "/certs"
+      name: ""          # defaults to <release>-aws-workload
+      commonName: ""    # defaults to the release name
+      issuerRef:
+        name: ""
+        kind: ClusterIssuer
+      duration: "720h"
+      renewBefore: "48h"
+      privateKey:
+        algorithm: RSA
+        size: 2048
+        rotationPolicy: Always
+      usages:
+        - digital signature
+        - key encipherment
+        - client auth
+
+    # Only read when authMode is "env" — a static access key, for clusters without
+    # cert-manager and for local testing. Required there: the mode names an access key
+    # the workload does not otherwise have.
+    credentialsSecret:
+      name: ""
+      accessKeyIdKey: "AWS_ACCESS_KEY_ID"
+      secretAccessKeyKey: "AWS_SECRET_ACCESS_KEY"
+
+    # Only read when authMode is "irsa": the default IAM role, for services that do not
+    # name their own. Rendered as the eks.amazonaws.com/role-arn annotation.
+    #
+    # The role belongs to a ServiceAccount, so each service can carry its own —
+    # devops-ai-agent.serviceAccount.roleArn and devops-llm-worker.serviceAccount.roleArn
+    # win over this. Prefer those: the agent writes to SQS while the worker reads it and
+    # also holds the GitHub credentials, so one role for both is the larger of the two
+    # permission sets granted twice. This value is here for the case where that does not
+    # matter yet.
+    irsa:
+      roleArn: ""
 
   # Whether this release also deploys Postgres and Redis, and what they are called.
   #

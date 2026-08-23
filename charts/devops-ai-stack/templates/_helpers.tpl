@@ -148,22 +148,48 @@ securityContext:
 resources:
   {{- toYaml . | nindent 2 }}
 {{- end }}
-{{- with .Values.extraVolumeMounts }}
+{{- $certMount := include "devops-ai.awsCertVolumeMount" . -}}
+{{- if or .Values.extraVolumeMounts (trim $certMount) }}
 volumeMounts:
+  {{- with .Values.extraVolumeMounts }}
   {{- toYaml . | nindent 2 }}
+  {{- end }}
+  {{- with (trim $certMount) }}
+  {{- . | nindent 2 }}
+  {{- end }}
 {{- end }}
 {{- end -}}
 
 {{/*
-The in-cluster address of the MCP server, derived rather than configured. The agent and
-the MCP server are two repos that must agree on this; deriving it from the same values
-the Service is rendered from means they cannot drift.
+Pod volumes: the service's own extraVolumes plus the AWS workload cert when Roles
+Anywhere is on. Paired with containerCommon's mount above — a chart that emitted one
+without the other would render valid YAML that Kubernetes refuses to schedule.
+*/}}
+{{- define "devops-ai.volumes" -}}
+{{- $certVolume := include "devops-ai.awsCertVolume" . -}}
+{{- if or .Values.extraVolumes (trim $certVolume) }}
+volumes:
+  {{- with .Values.extraVolumes }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+  {{- with (trim $certVolume) }}
+  {{- . | nindent 2 }}
+  {{- end }}
+{{- end }}
+{{- end -}}
 
-Honours global.mcp.url for the case where the MCP server runs outside this release.
+{{/*
+The in-cluster address of the MCP server, derived rather than configured.
+
+Called with the AGENT's context — the agent is the only side that dials — so it reads
+the agent's own `mcp:` block. The three fields it derives from are checked against the
+mcp-server subchart's actual Service in _validate.tpl, which is what stops a URL that
+renders cleanly and resolves to nothing.
+
+Honours mcp.url for the case where the MCP server runs outside this release.
 */}}
 {{- define "devops-ai.mcpUrl" -}}
-{{- $g := .Values.global | default dict -}}
-{{- $mcp := $g.mcp | default dict -}}
+{{- $mcp := .Values.mcp | default dict -}}
 {{- if $mcp.url -}}
 {{- $mcp.url -}}
 {{- else -}}

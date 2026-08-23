@@ -3,6 +3,11 @@
 #
 # No Service and no Ingress: this workload is outbound-only. It polls SQS and calls out;
 # nothing ever connects TO it. A Service here would be an unused attack surface.
+#
+# Configuration is grouped by the thing it configures: `llm:`, `sqs:` and `gitops:` below
+# are objects whose fields the chart renders into the env vars src/config.ts reads. The raw
+# `env:` / `secretEnv:` / `extraEnv:` maps remain as an escape hatch, and they WIN —
+# anything set there suppresses the value this chart would have derived.
 
 enabled: true
 
@@ -23,59 +28,154 @@ imagePullSecrets: []
 serviceAccount:
   create: true
   name: "devops-llm-worker"
+  # The default kube-api token — this worker never calls the Kubernetes API. Unrelated to
+  # IRSA, which arrives on its own projected volume from the EKS webhook.
   automountServiceAccountToken: false
+
+  # IRSA. Only read when global.aws.authMode is "irsa", rendered as the
+  # eks.amazonaws.com/role-arn annotation. Empty means global.aws.irsa.roleArn applies.
+  #
+  # Set it here when the worker needs its own role — it reads the request queues and
+  # writes the response queue, which is not the permission set the agent needs.
+  roleArn: ""
+
   annotations: {}
 
-env:
-  NODE_ENV: "production"
-  SQS_POLL_WAIT_SECONDS: "20"
-  SQS_MAX_MESSAGES: "10"
-  # Names the WIRE FORMAT, not the vendor: "openai" posts /v1/chat/completions,
-  # "anthropic" posts /v1/messages. A self-hosted model behind an OpenAI-compatible
-  # gateway is "openai". Validated at umbrella level — a typo fails the render.
-  LLM_API_FORMAT: "openai"
-  LLM_MAX_TOKENS: "16384"
+# ---------------------------------------------------------------------------
+# The private LLM this worker exists to reach.
+#
+# baseUrl and model have no default and no fallback: src/config.ts reads them with a
+# non-null assertion, so an unset one is `undefined` passed into a fetch URL and a crash on
+# the first message rather than at boot. The umbrella fails the render instead.
+# ---------------------------------------------------------------------------
+llm:
+  # The WIRE FORMAT, not the vendor: "openai" posts /v1/chat/completions, "anthropic" posts
+  # /v1/messages. A self-hosted model behind an OpenAI-compatible gateway is "openai" —
+  # vLLM, llama.cpp, LiteLLM and TGI all are. Anything else fails the render.
+  apiFormat: "openai"
 
-secretEnv:
-  LLM_API_KEY:
-    secret: llm-api-key-secret
-    key: api-key
-    optional: true
+  # REQUIRED. The endpoint root, e.g. http://vllm.llm:8000/v1 — the path the format
+  # expects is appended by the client.
+  baseUrl: ""
+
+  # REQUIRED. Whatever name the endpoint answers to; it is passed through verbatim.
+  model: ""
+
+  maxTokens: 16384
+
+  # Only for a backend that reaches the endpoint through SOCKS. Empty means direct.
+  socksProxy: ""
+
+  # Optional: the config defaults the key to the literal "none", which is what a
+  # self-hosted endpoint with no auth expects. Mounted optional, so a Secret that has not
+  # been created yet gives a 401 from the endpoint rather than a Pod that never starts.
+  existingSecret: "llm-api-key-secret"
+  apiKeyKey: "api-key"
+
+  # Sampling. temperature and topP reach both wire formats; the other three are sent on
+  # the OpenAI path ONLY, and the chart therefore renders them only under
+  # apiFormat: openai. Setting one under "anthropic" fails the render rather than
+  # producing a 400 on every request from an endpoint that rejects unknown fields.
+  sampling:
+    temperature: ~
+    topP: ~
+    # low | medium | high — reasoning models only.
+    reasoningEffort: ""
+    seed: ~
+  # Newer OpenAI models reject `max_tokens` and want `max_completion_tokens` instead.
+  # OpenAI-path only, same as the block above.
+  useMaxCompletionTokens: false
+
+# ---------------------------------------------------------------------------
+# How this worker polls. The queue NAMES are not here — they are global.sqs in the
+# umbrella, because the agent writes what this worker reads and a name that differs
+# between the two is a message nobody answers.
+# ---------------------------------------------------------------------------
+sqs:
+  # Long-poll duration. 20 is the API maximum and the right value: shorter means more
+  # empty receives, which cost the same as full ones.
+  pollWaitSeconds: 20
+  maxMessages: 10
+  # In-flight requests at once. Each is an LLM call, so this is really a bound on
+  # concurrent load against the endpoint, not on this process.
+  maxConcurrency: 10
+  # Must exceed the slowest LLM call this worker will make. Too short and SQS redelivers a
+  # request that is still being answered — the agent then gets two answers to one
+  # requestId, or the message reaches the DLQ mid-success.
+  visibilityTimeoutSeconds: 300
+  # Receives before SQS moves the message to the DLQ.
+  maxReceiveCount: 3
+
+# ---------------------------------------------------------------------------
+# GitOps PR remediation. This worker is the private network's bridge to GitHub — it holds
+# the credentials, the agent holds none, and `repo` is the only repository the handler will
+# ever touch.
+#
+# The app derives its own `enabled` from having BOTH a credential and a repo, so this flag
+# and those values have to agree: with credentials and no repo the worker boots, logs
+# gitops as disabled, and silently drops every proposal the agent queues. The chart
+# requires them together.
+# ---------------------------------------------------------------------------
+gitops:
+  enabled: false
+  repo: ""                              # owner/name
+  branch: "main"
+  # Public GitHub. GitHub Enterprise is https://<host>/api/v3 — note the /api/v3, which the
+  # web UI's own hostname does not have.
+  apiUrl: "https://api.github.com"
+  # Restricts PRs to a subdirectory, e.g. "apps/" — a second bound on blast radius beyond
+  # `repo`. Empty means the whole repository.
+  pathPrefix: ""
+
+  # One of the two. The app prefers the PAT when both are configured.
+  auth:
+    # A personal access token — the initial-phase path. Set `name: ""` to use the App
+    # instead.
+    tokenSecret:
+      name: "github-token-secret"
+      key: "token"
+
+    # A GitHub App: exchanges a signed JWT for a short-lived installation token per call,
+    # so nothing long-lived lives in the cluster. Preferred once the App exists.
+    githubApp:
+      appId: ""
+      # NOT the same as appId: the App is the definition, the installation is its grant on
+      # one org. An App installed twice has one appId and two installation IDs.
+      installationId: ""
+      # Mounted as a file rather than passed inline — a PEM in an env var is printed in
+      # full by `kubectl describe pod`.
+      privateKeySecret:
+        name: ""
+        key: "private-key.pem"
+      privateKeyMountPath: "/github-app"
+
+# ---------------------------------------------------------------------------
+# Escape hatches. Anything set in `env` WINS over the blocks above: the chart skips a
+# derived variable whose name is already present here. A map, not a list, so a Kustomize
+# overlay can patch one key without replacing the rest.
+# ---------------------------------------------------------------------------
+env:
+  # "prod", not "production": every service compares this string EXACTLY.
+  # agent and worker: level = NODE_ENV === "prod" ? "info" : "debug"
+  # mcp-server:       isDev  = NODE_ENV === "dev"  (anything else is prod format)
+  # So "production" reads as not-prod in two of the three and ships debug logging.
+  NODE_ENV: "prod"
+
+# Secret-backed environment the blocks above do not cover: name -> {secret, key, optional}.
+secretEnv: {}
 
 extraEnv: []
 
-# GitOps PR remediation. The worker is the private-network bridge to GitHub — it holds
-# the credentials, the agent holds none.
-gitops:
-  enabled: false
-  repo: ""                 # owner/name
-  branch: "main"
-  apiUrl: "https://api.github.com"
-  tokenSecret:
-    name: github-token-secret
-    key: token
+# Whether this workload talks to AWS. On: the worker's entire job starts with reading SQS.
+# The credentials themselves are global.aws in the umbrella chart — the agent and this
+# worker meet on those queues, so they authenticate to the same account in the same region.
+aws:
+  enabled: true
 
-# A cert-manager Certificate for AWS IAM Roles Anywhere: the worker authenticates to AWS
-# with an X.509 workload cert rather than a static key. Off by default — it needs a
-# ClusterIssuer that this chart does not create.
-certificate:
-  enabled: false
-  issuerRef:
-    name: workload-ca-issuer
-    kind: ClusterIssuer
-  secretName: workload-tls
-  commonName: devops-llm-worker
-  duration: 720h
-  renewBefore: 48h
-  privateKey:
-    algorithm: RSA
-    size: 2048
-    rotationPolicy: Always
-  usages:
-    - digital signature
-    - key encipherment
-    - client auth
-  mountPath: /certs
+# AWS credentials, the workload certificate, and the region live under global.aws in the
+# umbrella chart, not here: this worker and the agent meet on SQS, so they must reach the
+# same region with credentials for the same account. One object, rendered into both.
+# See charts/devops-ai-stack/templates/_shared-env.tpl.
 
 resources: {}
 

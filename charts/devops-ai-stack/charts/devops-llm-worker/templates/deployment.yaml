@@ -47,35 +47,23 @@ spec:
           # No ports: nothing connects to this workload.
           env:
             {{- include "devops-ai.sqsEnv" . | nindent 12 }}
+            {{- include "devops-ai.awsEnv" . | nindent 12 }}
+            {{- include "devops-llm-worker.derivedEnv" . | nindent 12 }}
             {{- include "devops-ai.env" . | nindent 12 }}
-            {{- if .Values.gitops.enabled }}
-            - name: GITOPS_REPO
-              value: {{ required "devops-llm-worker.gitops.repo is required when gitops.enabled — the worker needs to know which repo to open PRs against" .Values.gitops.repo | quote }}
-            - name: GITOPS_BRANCH
-              value: {{ .Values.gitops.branch | quote }}
-            - name: GITHUB_API_URL
-              value: {{ .Values.gitops.apiUrl | quote }}
-            - name: GITHUB_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.gitops.tokenSecret.name }}
-                  key: {{ .Values.gitops.tokenSecret.key }}
-            {{- end }}
-            {{- if .Values.certificate.enabled }}
-            - name: CERT_PATH
-              value: {{ printf "%s/tls.crt" .Values.certificate.mountPath | quote }}
-            - name: CERT_KEY_PATH
-              value: {{ printf "%s/tls.key" .Values.certificate.mountPath | quote }}
-            {{- end }}
+          {{- $certMount := include "devops-ai.awsCertVolumeMount" . }}
+          {{- $keyMount := include "devops-llm-worker.githubAppVolumeMount" . }}
+          {{- if or .Values.extraVolumeMounts (trim $certMount) (trim $keyMount) }}
           volumeMounts:
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-            {{- if .Values.certificate.enabled }}
-            - name: workload-cert
-              mountPath: {{ .Values.certificate.mountPath }}
-              readOnly: true
+            {{- with (trim $certMount) }}
+            {{- . | nindent 12 }}
             {{- end }}
+            {{- with (trim $keyMount) }}
+            {{- . | nindent 12 }}
+            {{- end }}
+          {{- end }}
           {{- if .Values.livenessProbe.enabled }}
           livenessProbe:
             {{- omit .Values.livenessProbe "enabled" | toYaml | nindent 12 }}
@@ -84,12 +72,17 @@ spec:
           readinessProbe:
             {{- omit .Values.readinessProbe "enabled" | toYaml | nindent 12 }}
           {{- end }}
+      {{- $certVolume := include "devops-ai.awsCertVolume" . }}
+      {{- $keyVolume := include "devops-llm-worker.githubAppVolume" . }}
+      {{- if or .Values.extraVolumes (trim $certVolume) (trim $keyVolume) }}
       volumes:
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-        {{- if .Values.certificate.enabled }}
-        - name: workload-cert
-          secret:
-            secretName: {{ .Values.certificate.secretName }}
+        {{- with (trim $certVolume) }}
+        {{- . | nindent 8 }}
         {{- end }}
+        {{- with (trim $keyVolume) }}
+        {{- . | nindent 8 }}
+        {{- end }}
+      {{- end }}

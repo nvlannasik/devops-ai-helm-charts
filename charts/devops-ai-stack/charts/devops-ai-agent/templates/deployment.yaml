@@ -40,20 +40,16 @@ spec:
             - name: main
               containerPort: {{ .Values.service.port }}
               protocol: TCP
-            {{- if eq (.Values.env.DASHBOARD_ENABLED | toString) "true" }}
+            {{- if .Values.dashboard.enabled }}
             - name: dashboard
-              containerPort: {{ .Values.service.dashboardPort }}
+              containerPort: {{ .Values.dashboard.port }}
               protocol: TCP
             {{- end }}
           env:
-            # Derived, not configured: the agent and the MCP server are separate repos
-            # that must agree on this address. Deriving it from the same values that
-            # render the Service is what stops them drifting.
-            - name: MCP_HTTP_URL
-              value: {{ include "devops-ai.mcpUrl" . | quote }}
             {{- include "devops-ai.mcpAuthEnv" . | nindent 12 }}
             {{- include "devops-ai.sqsEnv" . | nindent 12 }}
-            {{- include "devops-ai.backingServicesEnv" . | nindent 12 }}
+            {{- include "devops-ai.awsEnv" . | nindent 12 }}
+            {{- include "devops-ai-agent.derivedEnv" . | nindent 12 }}
             {{- include "devops-ai.env" . | nindent 12 }}
           {{- if .Values.livenessProbe.enabled }}
           livenessProbe:
@@ -63,7 +59,4 @@ spec:
           readinessProbe:
             {{- omit .Values.readinessProbe "enabled" | toYaml | nindent 12 }}
           {{- end }}
-      {{- with .Values.extraVolumes }}
-      volumes:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "devops-ai.volumes" . | nindent 6 }}

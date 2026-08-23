@@ -78,8 +78,9 @@ rules:
 
   {{- if .Values.rbac.allowWrite }}
   # ---- mutating: the guarded remediation tools ----
-  # Reached only when MCP_ENABLE_WRITE_TOOLS is also true AND the target namespace is in
-  # ALLOWED_REMEDIATION_NAMESPACES. This grant is the outer bound, not the whole gate.
+  # Reached only when writeTools.enabled is also true AND the target namespace is in
+  # writeTools.allowedNamespaces. This grant is the outer bound, not the whole gate — and
+  # it is cluster-wide, which the namespace list does nothing to narrow.
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets"]
     verbs: ["patch", "update"]

@@ -42,6 +42,7 @@ spec:
               protocol: TCP
           env:
             {{- include "devops-ai.mcpAuthEnv" . | nindent 12 }}
+            {{- include "devops-mcp-server.derivedEnv" . | nindent 12 }}
             {{- include "devops-ai.env" . | nindent 12 }}
           {{- if .Values.livenessProbe.enabled }}
           livenessProbe:
@@ -51,7 +52,4 @@ spec:
           readinessProbe:
             {{- omit .Values.readinessProbe "enabled" | toYaml | nindent 12 }}
           {{- end }}
-      {{- with .Values.extraVolumes }}
-      volumes:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "devops-ai.volumes" . | nindent 6 }}

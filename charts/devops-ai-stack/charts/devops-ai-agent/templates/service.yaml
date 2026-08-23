@@ -16,9 +16,9 @@ spec:
       port: {{ .Values.service.port }}
       targetPort: main
       protocol: TCP
-    {{- if eq (.Values.env.DASHBOARD_ENABLED | toString) "true" }}
+    {{- if .Values.dashboard.enabled }}
     - name: dashboard
-      port: {{ .Values.service.dashboardPort }}
+      port: {{ .Values.dashboard.port }}
       targetPort: dashboard
       protocol: TCP
     {{- end }}

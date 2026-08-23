@@ -1,0 +1,43 @@
+{{- $aws := .Values.global.aws | default dict -}}
+{{- if and (eq ($aws.authMode | default "iam-anywhere") "iam-anywhere") ($aws.certificate | default dict).create }}
+{{- $cert := $aws.certificate }}
+{{/*
+The X.509 workload certificate that AWS IAM Roles Anywhere exchanges for temporary
+credentials — no static access key is stored anywhere in this release.
+
+It lives at the umbrella level rather than inside a subchart because both the agent and
+the worker mount it: two Certificates issued from one issuer for one identity would be
+two things to rotate and two ways to drift. One Secret, mounted by whoever needs it.
+
+Requires cert-manager and the referenced issuer; this chart creates neither. If the
+issuer does not exist the Certificate stays pending and every Pod that mounts it blocks
+on its volume — which is why global.aws.certificate.create can be turned off to mount a
+Secret that something else issues.
+
+Only rendered under authMode "iam-anywhere". No other mode presents a certificate, and
+issuing one nothing mounts is a key to rotate for no reason.
+*/}}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $cert.name | default (printf "%s-aws-workload" .Release.Name) }}
+  labels:
+    {{- include "devops-ai.labels" . | nindent 4 }}
+spec:
+  secretName: {{ $cert.secretName | default "workload-tls" }}
+  duration: {{ $cert.duration | default "720h" }}
+  renewBefore: {{ $cert.renewBefore | default "48h" }}
+  commonName: {{ $cert.commonName | default .Release.Name | quote }}
+  {{- with $cert.subject }}
+  subject:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  privateKey:
+    {{- toYaml ($cert.privateKey | default (dict "algorithm" "RSA" "size" 2048 "rotationPolicy" "Always")) | nindent 4 }}
+  usages:
+    {{- toYaml ($cert.usages | default (list "digital signature" "key encipherment" "client auth")) | nindent 4 }}
+  issuerRef:
+    name: {{ required "global.aws.certificate.issuerRef.name is required when the chart issues the workload certificate" ($cert.issuerRef | default dict).name }}
+    kind: {{ ($cert.issuerRef).kind | default "ClusterIssuer" }}
+    group: {{ ($cert.issuerRef).group | default "cert-manager.io" }}
+{{- end }}

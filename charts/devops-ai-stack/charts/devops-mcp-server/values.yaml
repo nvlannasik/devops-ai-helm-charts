@@ -1,5 +1,14 @@
 # devops-mcp-server — the MCP tool server. Holds the only Kubernetes credentials in this
 # stack; the agent reaches the cluster only through it.
+#
+# Configuration is grouped by the thing it configures, not by the mechanism that carries
+# it: `kubernetes:`, `writeTools:`, `prometheus:` and friends below are objects whose
+# fields the chart renders into the env vars src/config/index.ts reads. A URL and the
+# credentials for it live side by side, so one upstream is one block rather than a name in
+# `env:` plus two matching names in `secretEnv:` that nothing relates to it.
+#
+# The raw `env:` / `secretEnv:` / `extraEnv:` maps are still here as an escape hatch, and
+# they WIN: anything set there suppresses the value this chart would have derived.
 
 enabled: true
 
@@ -25,15 +34,157 @@ serviceAccount:
   automountServiceAccountToken: true
   annotations: {}
 
-env:
-  NODE_ENV: "production"
-  PORT: "3000"
-  MCP_TRANSPORT: "http"
-  K8S_AUTH_MODE: "incluster"
-  # PROMETHEUS_URL / LOKI_URL / TRACING_URL are cluster-specific — set them per overlay.
+# ---------------------------------------------------------------------------
+# The server's half of the MCP contract.
+#
+# Written here AND in devops-ai-agent.mcp, because a subchart can read only its own
+# values plus `global`, and MCP configuration is not global — it belongs to the two
+# services that speak it. The umbrella's templates/_validate.tpl compares the two halves
+# and refuses to render when they disagree, so the second copy is checked rather than
+# merely hoped for.
+#
+# The agent's block additionally carries the address (url / serviceName / namespace /
+# port); this side only listens, so it has no address to state — its port is
+# service.port below.
+# ---------------------------------------------------------------------------
+mcp:
+  # "http" is the only value that works in this chart: the agent reaches this server over
+  # the network. "stdio" means the server is a child process of the agent, which it is not
+  # when it runs as its own Deployment.
+  #
+  # Rendered as TRANSPORT, which is the name this server reads — the agent reads
+  # MCP_TRANSPORT for the same decision. Two repos that named one contract two ways, so
+  # each side renders its own name and the umbrella compares the values across it.
+  transport: "http"
 
+  # The bearer token this server compares incoming requests against. It must equal the
+  # agent's mcp.authToken / authTokenSecret.
+  #
+  # Do NOT put a real token here — values.yaml goes into Git. Prefer authTokenSecret, or
+  # pass --set at install time. The render fails when neither side sets one: this server
+  # exposes the cluster's write tools, so an unauthenticated one is not a degraded state.
+  authToken: ""
+  authTokenSecret:
+    name: ""
+    key: "MCP_AUTH_TOKEN"
+
+# ---------------------------------------------------------------------------
+# How the server reaches the Kubernetes API.
+#
+# Only these two values exist: the client library builds the connection either from the
+# Pod's own ServiceAccount ("incluster") or from a kubeconfig file. There is no
+# apiServer/token/caCert path to configure — the chart cannot offer what the client does
+# not read.
+# ---------------------------------------------------------------------------
+kubernetes:
+  # incluster | kubeconfig. In this chart it is always "incluster": the credentials are
+  # the ServiceAccount token and the ClusterRole below, which is why this is the only
+  # workload in the stack that mounts a kube-api token at all.
+  authMode: "incluster"
+  # kubeconfig mode only. Mount the file yourself with extraVolumes/extraVolumeMounts.
+  kubeconfigPath: ""
+
+# ---------------------------------------------------------------------------
+# Guarded remediation — the INNER of the two gates. `rbac.allowWrite` below is the outer
+# one, and both must allow an action for it to happen.
+#
+# `enabled` controls REGISTRATION, not authorization: the agent caches listTools() at
+# startup, so a tool that is listed and then refuses makes the model loop on it. Off means
+# the write tools do not exist, not that they exist and say no.
+# ---------------------------------------------------------------------------
+writeTools:
+  enabled: false
+
+  # Opt-in per namespace. EMPTY MEANS EVERY NAMESPACE IS BLOCKED — this is an allowlist,
+  # not a denylist, and it is enforced here in the server rather than in the agent.
+  #
+  # kube-system, kube-public, kube-node-lease and flux-system are refused by the server
+  # whatever this list says. Listing them changes nothing.
+  allowedNamespaces: []
+
+  # k8s_scale blast radius: the largest |new - current| replica change allowed in one
+  # action. Scaling to zero is always refused — that is an outage, not a remediation.
+  maxScaleDelta: 5
+
+# ---------------------------------------------------------------------------
+# Upstreams. Each is a URL plus optional basic-auth credentials from a Secret; the
+# username and password are read as a pair, so naming one without the other emits
+# neither — a username with no password authenticates as nobody.
+#
+# The URLs are cluster-specific and have no useful default: left empty, the server keeps
+# its own localhost defaults, warns at boot that the upstream is unreachable, and the
+# tools for it fail on call. Set them per overlay.
+# ---------------------------------------------------------------------------
+prometheus:
+  url: ""
+  existingSecret: ""
+  usernameKey: "PROMETHEUS_USERNAME"
+  passwordKey: "PROMETHEUS_PASSWORD"
+
+# The fan-in point for every alert source, and the only one that knows about silences and
+# inhibition — distinct from Prometheus, which sees its own rules only.
+alertmanager:
+  url: ""
+  existingSecret: ""
+  usernameKey: "ALERTMANAGER_USERNAME"
+  passwordKey: "ALERTMANAGER_PASSWORD"
+
+loki:
+  url: ""
+  existingSecret: ""
+  usernameKey: "LOKI_USERNAME"
+  passwordKey: "LOKI_PASSWORD"
+
+tracing:
+  # tempo | jaeger — the QUERY API to speak, and the two are not interchangeable. An OTel
+  # Collector is not a value here: it is ingest-only, so point this at whatever store the
+  # collector exports to. The umbrella rejects any other value rather than letting the
+  # first trace lookup throw.
+  backend: "tempo"
+  url: ""
+  existingSecret: ""
+  usernameKey: "TRACING_USERNAME"
+  passwordKey: "TRACING_PASSWORD"
+
+# ---------------------------------------------------------------------------
+# Ceilings. Both exist to stop one bad answer from becoming a worse one.
+# ---------------------------------------------------------------------------
+limits:
+  # Cap on items returned by NAMESPACED list tools, so one huge namespace cannot produce a
+  # response that gets truncated to garbage downstream.
+  #
+  # k8s_cluster_health deliberately ignores this: it is one cluster-wide scan, and a cap
+  # there turns a complete answer into a partial one that still reads as complete.
+  k8sListLimit: 100
+  # Longest wait on any upstream (Prometheus/Loki HTTP, the K8s API) before the tool fails
+  # instead of holding an investigation's turn open.
+  upstreamTimeoutSeconds: 30
+
+# ---------------------------------------------------------------------------
+# Escape hatches. Anything set in `env` WINS over the blocks above: the chart skips a
+# derived variable whose name is already present here. A map, not a list, so a Kustomize
+# overlay can patch one key without replacing every other.
+# ---------------------------------------------------------------------------
+env:
+  # "prod", not "production": every service compares this string EXACTLY.
+  # agent and worker: level = NODE_ENV === "prod" ? "info" : "debug"
+  # mcp-server:       isDev  = NODE_ENV === "dev"  (anything else is prod format)
+  # So "production" reads as not-prod in two of the three and ships debug logging.
+  NODE_ENV: "prod"
+
+# Secret-backed environment the blocks above do not cover: name -> {secret, key, optional}.
 secretEnv: {}
+
+# Raw core/v1 EnvVar entries, appended last. For shapes the two maps cannot express
+# (fieldRef, resourceFieldRef, configMapKeyRef).
 extraEnv: []
+
+# OFF, and it should stay off. This server's credentials are Kubernetes ones — the
+# ServiceAccount token and the ClusterRole below — and it reaches Prometheus, Loki and
+# Jaeger over plain HTTP inside the cluster. It never calls an AWS API, so it gets no
+# region, no ARNs, and no workload certificate mounted into its Pod.
+aws:
+  enabled: false
 
 service:
   type: ClusterIP
@@ -54,9 +205,10 @@ rbac:
   # scale, delete_pod). OFF by default: a chart that grants mutating cluster-wide RBAC
   # the moment it is installed is a chart that surprises someone.
   #
-  # Enabling this alone changes nothing at runtime — the server also needs
-  # MCP_ENABLE_WRITE_TOOLS=true and an ALLOWED_REMEDIATION_NAMESPACES list. Both layers
-  # must agree, which is the point: RBAC is the outer bound, the env vars the inner one.
+  # Must match writeTools.enabled above — the umbrella refuses to render when they
+  # disagree in either direction. RBAC is the outer bound and the tool registration the
+  # inner one; one without the other is either a tool that gets 403 on every call or a
+  # cluster-wide write grant nothing uses.
   allowWrite: false
 
   # Lets the flux_reconcile tool annotate a HelmRelease so Flux re-applies what the repo

@@ -22,16 +22,116 @@ Watch it come up:
 
 {{- if ne $agent.enabled false }}
 
-The agent needs these Secrets to exist in {{ .Release.Namespace }} — it will CrashLoop
-without them, and the chart cannot check for them at render time:
-{{ range $name, $ref := ($agent.secretEnv | default dict) }}{{ if not $ref.optional }}  {{ $ref.secret }}/{{ $ref.key }}
-{{ end }}{{ end }}
+{{- $slack := $agent.slack | default dict }}
+{{- $needed := dict }}
+{{- if $slack.existingSecret }}
+{{-   if $slack.botTokenKey }}{{ $_ := set $needed (printf "%s/%s" $slack.existingSecret $slack.botTokenKey) "the Slack bot token" }}{{ end }}
+{{-   if $slack.signingSecretKey }}{{ $_ := set $needed (printf "%s/%s" $slack.existingSecret $slack.signingSecretKey) "the Slack signing secret" }}{{ end }}
 {{- end }}
-{{- if and (ne $agent.enabled false) (eq (($agent.env | default dict).DASHBOARD_ENABLED | toString) "true") }}
+{{- $wh := $agent.alertWebhook | default dict }}
+{{- if and $wh.existingSecret $wh.tokenKey }}{{ $_ := set $needed (printf "%s/%s" $wh.existingSecret $wh.tokenKey) "the Alertmanager webhook token" }}{{ end }}
+{{- range $i, $b := (($agent.llm | default dict).backends | default list) }}
+{{-   if $b.existingSecret }}{{ $_ := set $needed (printf "%s/%s" $b.existingSecret ($b.apiKeyKey | default (printf "LLM_BACKEND_%d_KEY" (add1 $i)))) (printf "the API key for backend %q" $b.name) }}{{ end }}
+{{- end }}
+{{- $db := $agent.database | default dict }}
+{{- if and (or $db.host ($g.postgresql | default dict).enabled) $db.existingSecret $db.passwordKey }}{{ $_ := set $needed (printf "%s/%s" $db.existingSecret $db.passwordKey) "the Postgres password" }}{{ end }}
+{{- $rd := $agent.redis | default dict }}
+{{- if and (or $rd.enabled ($g.redis | default dict).enabled) $rd.existingSecret $rd.passwordKey }}{{ $_ := set $needed (printf "%s/%s" $rd.existingSecret $rd.passwordKey) "the Redis password" }}{{ end }}
+{{- if $needed }}
 
-Dashboard (not exposed by a Service port unless you set one):
+The agent reads these Secret keys, and will CrashLoop without them — nothing here creates
+them and nothing here can check for them at render time:
+{{ range $ref, $what := $needed }}  {{ $ref }}  — {{ $what }}
+{{ end }}
+{{- end }}
+{{- end }}
+{{- if ne $worker.enabled false }}
+{{- $llm := $worker.llm | default dict }}
+{{- $wg := $worker.gitops | default dict }}
+{{- $wneeded := dict }}
+{{- if and $llm.existingSecret $llm.apiKeyKey }}{{ $_ := set $wneeded (printf "%s/%s" $llm.existingSecret $llm.apiKeyKey) "the private LLM's API key (optional — omit for an endpoint with no auth)" }}{{ end }}
+{{- if $wg.enabled }}
+{{-   $wauth := $wg.auth | default dict }}
+{{-   $ts := $wauth.tokenSecret | default dict }}
+{{-   $app := $wauth.githubApp | default dict }}
+{{-   if $ts.name }}{{ $_ := set $wneeded (printf "%s/%s" $ts.name ($ts.key | default "token")) "the GitHub PAT that opens the pull requests" }}
+{{-   else if $app.appId }}{{ $_ := set $wneeded (printf "%s/%s" ($app.privateKeySecret | default dict).name (($app.privateKeySecret | default dict).key | default "private-key.pem")) "the GitHub App private key, mounted as a file" }}{{ end }}
+{{- end }}
+{{- if $wneeded }}
 
-  kubectl -n {{ .Release.Namespace }} port-forward deploy/{{ $agent.fullnameOverride | default "devops-ai-agent" }} {{ ($agent.service | default dict).dashboardPort | default 3001 }}
+The worker reads these, and it is the only workload here holding GitHub credentials:
+{{ range $ref, $what := $wneeded }}  {{ $ref }}  — {{ $what }}
+{{ end }}
+{{- end }}
+{{- if $wg.enabled }}
+The pull requests it opens go to {{ $wg.repo }}{{ if $wg.pathPrefix }} under {{ $wg.pathPrefix }}{{ end }} on branch {{ $wg.branch | default "main" }} — and nowhere else,
+whatever an investigation proposes.
+{{- end }}
+{{- end }}
+{{- $aws := $g.aws | default dict }}
+{{- $ra := $aws.rolesAnywhere | default dict }}
+{{- $mode := $aws.authMode | default "iam-anywhere" }}
+
+AWS auth mode: {{ $mode }} (rendered as AWS_AUTH_MODE on the agent and the worker; the
+MCP server gets none of this — it talks to the Kubernetes API and to
+Prometheus/Loki/Jaeger, never to AWS).
+{{- if eq $mode "iam-anywhere" }}
+
+Two Secrets back it, and the chart cannot check either at render time:
+
+  Secret  {{ ($ra.configSecret | default dict).name }}  — the trust anchor, profile and role ARNs
+          (must already exist — nothing here creates it)
+  Secret  {{ ($aws.certificate | default dict).secretName | default "workload-tls" }}  — the workload certificate, mounted at {{ ($aws.certificate | default dict).mountPath | default "/certs" }}
+{{- if ($aws.certificate | default dict).create }}
+          (issued by this release — cert-manager writes it; give it a moment)
+{{- else }}
+          (must already exist — issued outside this release, this chart only mounts it)
+{{- end }}
+
+entrypoint.sh exits before Node starts if an ARN is missing or the cert is unreadable, so
+a CrashLoop here is a credential problem, not an application one:
+
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ .Release.Name }} --previous | grep entrypoint
+{{- else if eq $mode "irsa" }}
+{{- $globalRole := ($aws.irsa | default dict).roleArn }}
+{{- range $svc := list "devops-ai-agent" "devops-llm-worker" }}
+{{- $svcVals := index $.Values $svc | default dict }}
+{{- if ne $svcVals.enabled false }}
+
+  {{ $svc }}  →  {{ ($svcVals.serviceAccount | default dict).roleArn | default $globalRole }}
+{{- end }}
+{{- end }}
+
+Annotated onto those ServiceAccounts. Each role's trust policy must name this cluster's
+OIDC provider AND the ServiceAccount it is annotated on, which is outside this chart — if
+it does not, the Pod starts and the SDK fails on its first call with AccessDenied rather
+than at render time:
+
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/instance={{ .Release.Name }} | grep -i accessdenied
+{{- else if eq $mode "env" }}
+
+  Secret  {{ ($aws.credentialsSecret | default dict).name }}  — a static access key
+          (must already exist — nothing here creates it)
+
+This is the one mode that keeps a long-lived credential in the cluster. Prefer
+"iam-anywhere" where cert-manager is available, or "irsa" on EKS.
+{{- else if eq $mode "instance-profile" }}
+
+Credentials come from the node's instance metadata — nothing to configure, and nothing
+this chart can verify. Every Pod on the node shares that role.
+{{- end }}
+{{- $dash := $agent.dashboard | default dict }}
+{{- if and (ne $agent.enabled false) $dash.enabled }}
+
+Dashboard, on the Service alongside the main port:
+
+  kubectl -n {{ .Release.Namespace }} port-forward deploy/{{ $agent.fullnameOverride | default "devops-ai-agent" }} {{ $dash.port | default 3001 }}
+{{- if $dash.cookieSecure }}
+
+  Its session cookie is Secure, so a browser drops it over plain HTTP — a login page that
+  keeps reappearing behind a plain-HTTP hostname is this, not a bad password. Browsers
+  exempt localhost, so the port-forward above is fine as is.
+{{- end }}
 {{- end }}
 {{- if ($g.postgresql | default dict).enabled }}
 
@@ -40,15 +140,17 @@ reused an existing volume, that database does not exist and the agent will fail 
 query — create it once by hand.
 {{- end }}
 {{- if and (ne $mcp.enabled false) (($mcp.rbac | default dict).allowWrite) }}
+{{- $w := $mcp.writeTools | default dict }}
 
 WARNING: the MCP server has WRITE access to the cluster.
 
   RBAC          allowWrite: true{{ if ($mcp.rbac).allowFluxReconcile }}, allowFluxReconcile: true{{ end }}
-  env           MCP_ENABLE_WRITE_TOOLS: {{ (($mcp.env | default dict).MCP_ENABLE_WRITE_TOOLS | default "unset") | quote }}
-  namespaces    {{ (($mcp.env | default dict).ALLOWED_REMEDIATION_NAMESPACES | default "unset") }}
+  tools         writeTools.enabled: {{ $w.enabled | default false }}
+  namespaces    {{ join ", " ($w.allowedNamespaces | default list) | default "(none — every namespace refused)" }}
+  scale delta   {{ $w.maxScaleDelta | default 5 }} replicas per action
 
-RBAC is the outer bound and is cluster-wide; ALLOWED_REMEDIATION_NAMESPACES is the inner
-one. Narrowing the env var alone does not narrow what the ServiceAccount may do.
+RBAC is the outer bound and it is cluster-wide; the namespace list is the inner one.
+Narrowing the list does not narrow what the ServiceAccount may do — only RBAC does that.
 {{- end }}
 
 Verify the whole stack agrees with itself at any time:

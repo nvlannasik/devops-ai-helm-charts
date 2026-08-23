@@ -1,13 +1,22 @@
 # devops-ai-agent — Slack bot and agentic investigation loop.
 #
-# Values that must agree with another service are NOT set here. Set them once under the
-# umbrella's `global:` and let both sides read them; templates/_validate.tpl fails the
-# render if the two ever disagree.
+# Configuration is grouped by the thing it configures, not by the mechanism that carries
+# it: `slack:`, `database:`, `llm:` and friends below are objects whose fields the chart
+# renders into the env vars src/config/index.ts reads. A value and the Secret it may come
+# from live side by side, so one concern is one block rather than a name in `env:` plus a
+# matching name in `secretEnv:` that nothing relates to it.
+#
+# The raw `env:` / `secretEnv:` / `extraEnv:` maps are still here as an escape hatch, and
+# they WIN: anything set there suppresses the value this chart would have derived. Use
+# them for variables the objects below do not cover.
+#
+# Values that must agree with ANOTHER service still live in the umbrella's `global:`
+# (the SQS queue names, the AWS credentials). MCP is the exception — see `mcp:` below.
 
 enabled: true
 
 nameOverride: ""
-# Not release-prefixed: MCP_HTTP_URL and Slack config address this by name.
+# Not release-prefixed: the MCP URL and Slack config address this by name.
 fullnameOverride: "devops-ai-agent"
 
 replicaCount: 1
@@ -25,63 +34,256 @@ serviceAccount:
   create: true
   name: "devops-ai-agent"
   # The agent itself never talks to the Kubernetes API — that is the MCP server's job.
+  # This is the DEFAULT kube-api token and is unrelated to IRSA: the EKS webhook injects
+  # its own projected volume, so roleArn below works with this off.
   automountServiceAccountToken: false
+
+  # IRSA. Only read when global.aws.authMode is "irsa", and rendered as the
+  # eks.amazonaws.com/role-arn annotation.
+  #
+  # A named field rather than something to spell into `annotations` below, because it is
+  # the one annotation these workloads always carry on EKS, and the annotation KEY is
+  # load-bearing — a typo in it is not an error, it is a Pod that silently falls back to
+  # the node's instance profile and runs with the node's permissions.
+  #
+  # Left empty, global.aws.irsa.roleArn applies. Set it here when the agent needs its own
+  # role: it writes to SQS and the worker reads, so the two do not need equal permissions.
+  roleArn: ""
+
+  # Anything else. Merged with the annotation above.
   annotations: {}
 
-# Plain environment variables: name -> value. A map, not a list, so a Kustomize overlay
-# can patch one key without replacing every other.
+# ---------------------------------------------------------------------------
+# How the agent reaches the MCP server.
+#
+# This block is written TWICE — here and in devops-mcp-server.mcp — because a subchart can
+# read only its own values plus `global`, and MCP configuration is not global: it belongs
+# to the two services that speak it. The cost of that is a bearer token in two places, so
+# the umbrella's templates/_validate.tpl compares them and refuses to render when they
+# disagree, along with the service name and port this URL is derived from.
+# ---------------------------------------------------------------------------
+mcp:
+  # "http" is the only value that works here: the server runs as its own Deployment and is
+  # reached over the network. "stdio" means the server is a child process of the agent.
+  transport: "http"
+
+  # Where the server is. Left empty, the URL is derived from the three fields below, which
+  # are checked against the mcp-server subchart's own Service — that is what stops the two
+  # drifting. Set `url` only when the MCP server lives outside this release.
+  url: ""
+  serviceName: "devops-mcp-server"
+  namespace: ""      # defaults to the release namespace
+  port: 3000
+
+  # Bearer token, sent as `Authorization: Bearer <token>` and compared by the server.
+  #
+  # Do NOT put a real token here — values.yaml goes into Git. Prefer authTokenSecret, or
+  # pass --set at install time. The render fails when neither side sets one.
+  authToken: ""
+  authTokenSecret:
+    name: ""
+    key: "MCP_AUTH_TOKEN"
+
+  # Per-tool-call timeout, so a hung MCP server cannot stall a whole investigation.
+  toolTimeoutSeconds: 45
+
+# ---------------------------------------------------------------------------
+# Slack: the way in and the way out. The bot token and signing secret are required — the
+# agent will not start without them.
+# ---------------------------------------------------------------------------
+slack:
+  # Channel the agent posts alert threads to.
+  alertChannel: ""
+  # Slack user IDs. Lists here, rendered as the comma-separated strings the agent parses.
+  oncallUsers: []
+  # Who may approve or reject a remediation. Empty falls back to oncallUsers; both empty
+  # means any user may decide (the agent warns at boot — it is still a human gate).
+  approverUsers: []
+  # Reacting with this emoji inside an investigated thread triggers learn-from-thread.
+  learnReaction: "white_check_mark"
+
+  # The Secret holding the three credentials, and the key of each within it. Naming the
+  # keys rather than assuming them lets one Secret serve several charts.
+  existingSecret: "devops-agent-secret"
+  botTokenKey: "SLACK_BOT_TOKEN"
+  signingSecretKey: "SLACK_SIGNING_SECRET"
+  # Socket Mode. Optional — omit the key to run without it.
+  appTokenKey: "SLACK_APP_TOKEN"
+
+# Alertmanager posts alerts to POST /alert with `Authorization: Bearer <token>`. That
+# endpoint starts investigations AND remediation proposals, so it is a real trust
+# boundary: with no token the agent accepts anonymous alerts and says so at boot.
+alertWebhook:
+  existingSecret: "devops-agent-secret"
+  tokenKey: "ALERT_WEBHOOK_TOKEN"
+
+# ---------------------------------------------------------------------------
+# LLM backends.
+#
+# `backends` is a LIST, rendered into the indexed LLM_BACKEND_<N>_* variables the agent's
+# registry parses. The indices have to be contiguous from 1 or the registry stops reading
+# at the first gap — writing them by hand made that a real failure mode, and a list has no
+# gaps to get wrong. Order here IS the index order.
+#
+# Each entry:
+#   name           what LLM_ROUTE_* refers to. Required.
+#   kind           claude | openai-compatible | private-llm. Required.
+#   model          claude and openai-compatible.
+#   baseUrl        openai-compatible only.
+#   contextTokens  optional; lets the router skip a backend whose window is too small.
+#   existingSecret + apiKeyKey
+#                  the API key, from a Secret. claude and openai-compatible.
+#                  apiKeyKey defaults to LLM_BACKEND_<N>_KEY — the same name the agent
+#                  reads — so a Secret written to match the env var needs only
+#                  existingSecret. private-llm has none: it goes over SQS to
+#                  llm-worker, which holds it.
+# ---------------------------------------------------------------------------
+llm:
+  # claude | openai-compatible | private-llm | router.
+  # "router" is what makes `backends` and `routes` below load-bearing; the other three
+  # name a single backend and ignore them.
+  provider: "claude"
+
+  # Output token ceiling for the direct (non-SQS) backends. The SQS path's own limit is
+  # llm-worker's LLM_MAX_TOKENS.
+  maxTokens: 8096
+
+  backends: []
+    # - name: haiku
+    #   kind: claude
+    #   model: claude-haiku-4-5
+    #   existingSecret: devops-agent-secret
+    #   apiKeyKey: CLAUDE_KEY
+    # - name: private-llm
+    #   kind: private-llm      # takes the SQS path — needs devops-llm-worker enabled
+
+  # Router policy. Names must match `backends[].name`; the agent fails at boot otherwise.
+  # heavy is the failover chain for investigations, light for cheap calls. Failover is
+  # up-only: light never falls back onto heavy.
+  routes:
+    heavy: []
+    light: []
+
+  # The SQS leg, used only by `private-llm` backends. The queue NAMES are a contract with
+  # llm-worker and live in global.sqs; these two are the agent's own patience.
+  sqs:
+    # Must cover the worker's worst case — a reasoning model burning its budget plus the
+    # worker's one automatic retry. 120s lost that race by 23s in testing: the worker
+    # delivered a good answer the agent had already given up on.
+    timeoutSeconds: 240
+    pollWaitSeconds: 10
+
+# ---------------------------------------------------------------------------
+# The investigation loop itself.
+# ---------------------------------------------------------------------------
+investigation:
+  # Wall-clock budget for one investigation. Bounds how long a concurrency slot is held.
+  timeoutSeconds: 300
+  maxConcurrent: 5
+  # Tool-call rounds allowed for a plain @mention before the agent must answer with what
+  # it has. 2 covers discover -> fetch exactly; a 3rd only ever fed wandering.
+  mentionToolRounds: 2
+
+# ---------------------------------------------------------------------------
+# GitOps PR remediation. The agent holds NO GitHub credentials: it puts PR requests on the
+# GitOps SQS queue and llm-worker — the private-network bridge that does hold them — opens
+# the pull request. Turning this on therefore requires the worker, with its own
+# gitops.enabled and repo; the umbrella checks both.
+# ---------------------------------------------------------------------------
+gitops:
+  enabled: false
+  # How long to wait for the worker's dry-run / PR reply.
+  timeoutSeconds: 120
+  # "Did that actually fix it?" The check is scheduled in Postgres and claimed by whichever
+  # replica polls next, so it survives the pod that approved the action.
+  # 300s beats a shorter delay because a rolling update is still converging before then,
+  # and a half-restarted workload reads as "not fixed" no matter what the remediation did.
+  verifyDelaySeconds: 300
+  verifyPollSeconds: 30
+
+# ---------------------------------------------------------------------------
+# Durable incident memory (Postgres). A long-lived record, distinct from the conversation
+# cache below. Disabled unless a host is known: with `host` empty and no bundled Postgres
+# the agent simply runs without incident history.
+# ---------------------------------------------------------------------------
+database:
+  # Leave empty when global.postgresql.enabled is true — the bundled Service name is
+  # derived. Set it to point at a Postgres this release did not deploy.
+  host: ""
+  port: 5432
+  name: "devops_agent"
+  username: "postgres"
+  sslMode: "disable"     # disable | require | verify-full
+  existingSecret: "devops-agent-secret"
+  passwordKey: "DB_PASSWORD"
+
+# ---------------------------------------------------------------------------
+# Conversation cache (Redis). OFF by default, which means MEMORY_BACKEND=inmemory: cache
+# state then lives in the pod and is lost on restart, which costs context, not data.
+#
+# Turn it on with global.redis.enabled (the host is derived) or by naming a host here.
+# On with neither is a chart pointed at localhost, so the render fails instead.
+# ---------------------------------------------------------------------------
+redis:
+  enabled: false
+  host: ""
+  port: 6379
+  db: 0
+  tls: false
+  username: ""
+  existingSecret: "devops-agent-secret"
+  passwordKey: "REDIS_PASSWORD"
+
+# ---------------------------------------------------------------------------
+# Read-only incident dashboard, on its own port in the same Pod. This one block drives the
+# container port, the Service port and the env vars — they used to be three values that
+# could disagree.
+#
+# Behind a shared-password session. With no password readable the dashboard serves 503
+# rather than serving incidents anonymously, so the Secret key is mounted `optional`.
+# ---------------------------------------------------------------------------
+dashboard:
+  enabled: true
+  port: 3001
+  # Opt-out, not opt-in: a Secure cookie is dropped in silence over plain HTTP and the
+  # symptom (a login page that keeps reappearing) points nowhere near the cause. Browsers
+  # exempt localhost, so a port-forward needs no change — only a plain-HTTP hostname does.
+  cookieSecure: true
+  existingSecret: "devops-agent-secret"
+  passwordKey: "DASHBOARD_PASSWORD"
+
+# ---------------------------------------------------------------------------
+# Escape hatches. Anything set in `env` WINS over the blocks above: the chart skips a
+# derived variable whose name is already present here. A map, not a list, so a Kustomize
+# overlay can patch one key without replacing every other.
+# ---------------------------------------------------------------------------
 env:
-  NODE_ENV: "production"
-  PORT: "3000"
-  MCP_TRANSPORT: "http"
-  # MCP_HTTP_URL is derived from the mcp-server Service unless global.mcp.url is set.
-  MEMORY_BACKEND: "redis"
-  MAX_CONCURRENT_INVESTIGATIONS: "5"
-  DASHBOARD_ENABLED: "true"
-  DASHBOARD_PORT: "3001"
-  DB_PORT: "5432"
-  DB_SSL_MODE: "disable"
-  DB_NAME: "devops_agent"
-  REDIS_PORT: "6379"
-  REDIS_DB: "0"
-  REDIS_TLS: "false"
+  # "prod", not "production": every service compares this string EXACTLY.
+  # agent and worker: level = NODE_ENV === "prod" ? "info" : "debug"
+  # mcp-server:       isDev  = NODE_ENV === "dev"  (anything else is prod format)
+  # So "production" reads as not-prod in two of the three and ships debug logging.
+  NODE_ENV: "prod"
 
-# Secret-backed environment: name -> {secret, key, optional}. Nothing sensitive belongs
-# in `env` above — values.yaml ends up in Git.
-secretEnv:
-  SLACK_BOT_TOKEN:
-    secret: devops-agent-secret
-    key: SLACK_BOT_TOKEN
-  SLACK_SIGNING_SECRET:
-    secret: devops-agent-secret
-    key: SLACK_SIGNING_SECRET
-  SLACK_APP_TOKEN:
-    secret: devops-agent-secret
-    key: SLACK_APP_TOKEN
-  ALERT_WEBHOOK_TOKEN:
-    secret: devops-agent-secret
-    key: ALERT_WEBHOOK_TOKEN
-  DB_PASSWORD:
-    secret: devops-agent-secret
-    key: DB_PASSWORD
-  REDIS_PASSWORD:
-    secret: devops-agent-secret
-    key: REDIS_PASSWORD
-  DASHBOARD_PASSWORD:
-    secret: devops-agent-secret
-    key: DASHBOARD_PASSWORD
-    optional: true
+# Secret-backed environment the blocks above do not cover: name -> {secret, key, optional}.
+secretEnv: {}
 
-# Raw core/v1 EnvVar entries, appended last. For shapes the two maps above cannot express
+# Raw core/v1 EnvVar entries, appended last. For shapes the two maps cannot express
 # (fieldRef, resourceFieldRef, configMapKeyRef).
 extraEnv: []
 
+# Whether this workload talks to AWS. On, because the agent puts LLM and GitOps requests
+# on SQS. Everything about HOW it authenticates — region, ARNs, the workload certificate —
+# is global.aws in the umbrella chart, shared with the worker; this key only says whether
+# to render it here.
+aws:
+  enabled: true
+
 service:
   type: ClusterIP
+  # Also rendered as PORT: the app and the container port cannot disagree.
   port: 3000
-  # The read-only incident dashboard. Same Pod, second port.
-  dashboardPort: 3001
   annotations: {}
+  # The dashboard's port is dashboard.port above, not a second value here.
 
 ingress:
   enabled: false
@@ -94,11 +296,6 @@ ingress:
   #        pathType: Prefix
   #        port: 3000
   tls: []
-
-# Alertmanager posts here. Off by default: it needs a routable host, and until one exists
-# an enabled-but-unroutable webhook looks healthy while dropping every alert.
-webhook:
-  enabled: false
 
 resources: {}
   # limits:
