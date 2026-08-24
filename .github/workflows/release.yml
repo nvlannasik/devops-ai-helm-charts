@@ -1,0 +1,65 @@
+name: release
+
+# A chart is published by tagging it. The tag is both the trigger and the version
+# statement — `v0.2.0` publishes chart version 0.2.0 and nothing else. Pushing the
+# tag also runs `lint` (its `on: push` has no branch filter), so the same commit is
+# linted and rendered before anything reaches the registry.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # Naming any permission drops the rest to none, so `contents` has to be
+      # restated — the job reads the repo and writes one package, nothing else.
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: azure/setup-helm@v5
+
+      # The tag and Chart.yaml are two independent statements of one version, and
+      # when they disagree the tag is the one people read while the chart is the one
+      # that gets published: a `v0.2.0` tag on a Chart.yaml still saying 0.1.0
+      # republishes 0.1.0 over itself, and the registry shows no sign of it.
+      - name: the tag matches the chart version
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME#v}"
+          chart="$(awk '/^version:/{gsub(/"/,"",$2); print $2}' charts/devops-ai-stack/Chart.yaml)"
+          test "$tag" = "$chart" || {
+            echo "tag $GITHUB_REF_NAME says $tag, Chart.yaml says $chart"
+            exit 1
+          }
+
+      # The Bitnami dependencies are committed under charts/devops-ai-stack/charts/,
+      # so packaging reaches no chart repository — what CI renders is what ships.
+      - name: helm package
+        run: helm package charts/devops-ai-stack --destination "$RUNNER_TEMP"
+
+      - name: helm push
+        env:
+          # Both through the environment rather than interpolated into the script:
+          # `${{ }}` expands before the shell sees the line, so a value only ever
+          # read as data cannot become a line of shell. GITHUB_TOKEN is scoped to
+          # this repo by the permissions block above — no PAT is involved.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
+        run: |
+          set -eu
+          # GHCR namespaces are lowercase; an owner with capitals would 403 on push
+          # rather than fail on a name check. `tr` instead of bash's `,,` so the
+          # line behaves the same wherever it is run.
+          owner="$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          repo="oci://ghcr.io/$owner/charts"
+          version="${GITHUB_REF_NAME#v}"
+          echo "$GH_TOKEN" | helm registry login ghcr.io -u "$GH_ACTOR" --password-stdin
+          helm push "$RUNNER_TEMP/devops-ai-stack-${version}.tgz" "$repo"
+          # A push that reports success but leaves nothing pullable is the failure
+          # worth catching here rather than from a cluster at 3am.
+          mkdir -p "$RUNNER_TEMP/verify"
+          helm pull "$repo/devops-ai-stack" --version "$version" -d "$RUNNER_TEMP/verify"
+          echo "published $repo/devops-ai-stack:$version" >> "$GITHUB_STEP_SUMMARY"

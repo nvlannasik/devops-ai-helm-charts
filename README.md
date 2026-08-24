@@ -96,6 +96,32 @@ with a role per workload, a `private-llm` backend over SQS, a GitHub App whose k
 mounted as a file, and the bundled subcharts. Between them every branch in the chart is
 rendered by CI, so a path nobody deploys today cannot rot unnoticed.
 
+## Publishing
+
+Releases are cut by tag. `.github/workflows/release.yml` packages the chart and pushes it
+to GHCR as an OCI artifact when a `v*` tag lands:
+
+```bash
+# bump version: in charts/devops-ai-stack/Chart.yaml first — the workflow refuses a tag
+# that disagrees with it, because otherwise `v0.2.0` would republish 0.1.0 silently.
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The result is `ghcr.io/nvlannasik/charts/devops-ai-stack:0.2.0`, installable directly:
+
+```bash
+helm install devops-ai oci://ghcr.io/nvlannasik/charts/devops-ai-stack \
+  --version 0.2.0 -n devops-tools -f my-values.yaml
+```
+
+The workflow authenticates with the job's own `GITHUB_TOKEN`, so no secret needs
+configuring. GHCR publishes a package **private** on first push: make it public under the
+package's settings, or give the puller credentials — Flux needs an `OCIRepository`/
+`HelmRepository` with a `secretRef` either way if it stays private. Pushing the tag also
+runs `lint`, so the same commit is rendered before it reaches the registry, and the
+workflow pulls the chart back after pushing — a push that reports success but leaves
+nothing installable is the failure worth catching in CI.
+
 ## Configuration
 
 Anything two services must agree on lives under `global:`; everything else lives under
