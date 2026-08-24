@@ -54,7 +54,7 @@ jobs:
           # rather than fail on a name check. `tr` instead of bash's `,,` so the
           # line behaves the same wherever it is run.
           owner="$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
-          repo="oci://ghcr.io/$owner/charts"
+          repo="oci://ghcr.io/$owner"
           version="${GITHUB_REF_NAME#v}"
           echo "$GH_TOKEN" | helm registry login ghcr.io -u "$GH_ACTOR" --password-stdin
           helm push "$RUNNER_TEMP/devops-ai-stack-${version}.tgz" "$repo"
