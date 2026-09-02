@@ -1,9 +1,19 @@
 name: lint
 
+# release.yml states that pushing a tag also lints the commit before it publishes. That
+# was only true while this file triggered on push; as pull_request-only it silently stopped
+# being true, and a direct push to main or a release tag reached the registry unrendered.
+# Restored here rather than corrected there, because the sentence describes the safety that
+# should exist: the validations in this file are the whole reason the chart exists.
 on:
   pull_request:
     branches:
       - main
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
 
 jobs:
   chart:
