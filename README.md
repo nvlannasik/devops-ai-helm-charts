@@ -224,6 +224,17 @@ Two things here are checked rather than documented. `sampling.reasoningEffort`, 
 `apiFormat: openai` and rejects them under `anthropic`, where an endpoint that validates
 its request body answers 400 to every message.
 
+`agent-builder` is the same rule one step further out, and it takes more with it. That path
+posts a Langflow run endpoint whose whole envelope is `input_type`, `output_type`,
+`input_value` and `session_id` — there is no field for a model name, a token cap or any
+sampling parameter, because all of those belong to the flow's own Model component and are
+set in the platform UI. So the chart **rejects** `model`, `maxTokens` and every `sampling`
+key under that format rather than rendering them into a Deployment where they would look
+authoritative and change nothing. For the same reason `model` is *required* under the other
+two formats and must be *absent* under this one. Two more differences worth knowing:
+`baseUrl` is the full run endpoint including the flow id (`https://<host>/api/v1/run/<flow-id>`),
+not a `/v1` base, and `LLM_API_KEY` goes out as an `x-api-key` header.
+
 And `gitops.enabled` is not a value the worker reads: its config *derives* the flag from
 `(GITHUB_TOKEN || GITHUB_APP_ID) && GITOPS_REPO`. A half-configured bridge therefore does
 not fail — it boots, logs itself as disabled, and drops every proposal the agent queues
@@ -258,8 +269,9 @@ ran on whatever the image's own `ENV TRANSPORT=http` said.
 | `devops-ai-agent.enabled` | `true` | |
 | `devops-mcp-server.enabled` | `true` | |
 | `devops-llm-worker.enabled` | `false` | Required for `private-llm` backends and GitOps PRs. |
-| `devops-llm-worker.llm.baseUrl` / `.model` | `""` | Required when the worker is on: no default, and no fallback. |
-| `devops-llm-worker.llm.apiFormat` | `openai` | `openai` \| `anthropic` — the wire format. |
+| `devops-llm-worker.llm.baseUrl` | `""` | Required when the worker is on. Under `agent-builder` it is the full run endpoint, flow id included. |
+| `devops-llm-worker.llm.model` | `""` | Required under `openai` and `anthropic`; rejected under `agent-builder`, where the flow owns it. |
+| `devops-llm-worker.llm.apiFormat` | `openai` | `openai` \| `anthropic` \| `agent-builder` — the wire format. |
 | `devops-llm-worker.gitops.repo` | `""` | The only repository the PR handler may touch. |
 | `devops-mcp-server.rbac.allowWrite` | `false` | Cluster-wide write. See below. |
 | `devops-mcp-server.rbac.allowFluxReconcile` | `false` | Lets `flux_reconcile` annotate HelmReleases. |

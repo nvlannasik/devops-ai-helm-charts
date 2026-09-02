@@ -295,17 +295,17 @@ check that reads only the object rejects a release that would have deployed corr
   {{- $llm := $worker.llm | default dict -}}
 
   {{- $fmt := $wEnvAll.LLM_API_FORMAT | default $llm.apiFormat | default "openai" -}}
-  {{- if not (has $fmt (list "openai" "anthropic")) -}}
-    {{- fail (printf "\n\nLLM_API_FORMAT is %q, which llm-worker does not implement.\n\nValid values: \"openai\" (POSTs /v1/chat/completions) or \"anthropic\" (POSTs /v1/messages).\n\nThis names the WIRE FORMAT, not the vendor — a self-hosted model behind an OpenAI-compatible gateway is \"openai\".\n" $fmt) -}}
+  {{- if not (has $fmt (list "openai" "anthropic" "agent-builder")) -}}
+    {{- fail (printf "\n\nLLM_API_FORMAT is %q, which llm-worker does not implement.\n\nValid values: \"openai\" (POSTs /v1/chat/completions), \"anthropic\" (POSTs /v1/messages), or \"agent-builder\" (POSTs a Langflow run endpoint).\n\nThis names the WIRE FORMAT, not the vendor — a self-hosted model behind an OpenAI-compatible gateway is \"openai\".\n" $fmt) -}}
   {{- end -}}
 
   {{/* baseUrl and model are read with a non-null assertion in src/config.ts. Unset means
        `undefined` interpolated into the request URL and a crash on the first message,
        long after the Pod has passed every probe. */}}
   {{- if not ($wEnvAll.LLM_BASE_URL | default $llm.baseUrl) -}}
-    {{- fail "\n\ndevops-llm-worker.llm.baseUrl is not set.\n\nThe worker reads LLM_BASE_URL with no default. Unset, it starts, reports healthy, and crashes on the first request with a URL built from `undefined`.\n\n  devops-llm-worker:\n    llm:\n      baseUrl: http://vllm.llm:8000/v1\n" -}}
+    {{- fail "\n\ndevops-llm-worker.llm.baseUrl is not set.\n\nThe worker reads LLM_BASE_URL with no default. Unset, it starts, reports healthy, and crashes on the first request with a URL built from `undefined`.\n\n  devops-llm-worker:\n    llm:\n      baseUrl: http://vllm.llm:8000/v1\n\nUnder apiFormat \"agent-builder\" this is the FULL run endpoint, not a /v1 base — the flow id is part of it:\n\n      baseUrl: https://<agent-builder-host>/api/v1/run/<flow-id>\n" -}}
   {{- end -}}
-  {{- if not ($wEnvAll.LLM_MODEL | default $llm.model) -}}
+  {{- if and (ne $fmt "agent-builder") (not ($wEnvAll.LLM_MODEL | default $llm.model)) -}}
     {{- fail "\n\ndevops-llm-worker.llm.model is not set.\n\nThe worker reads LLM_MODEL with no default, and passes it through verbatim as the model name in every request.\n\n  devops-llm-worker:\n    llm:\n      model: qwen2.5-coder-32b-instruct\n" -}}
   {{- end -}}
 
@@ -322,6 +322,35 @@ check that reads only the object rejects a release that would have deployed corr
     {{- range $k, $v := $openaiOnly -}}
       {{- if $v -}}
         {{- fail (printf "\n\n%s is set, but LLM_API_FORMAT is \"anthropic\".\n\nThat parameter belongs to /v1/chat/completions. The Anthropic path posts /v1/messages, which has no such field — an endpoint that validates its request body answers 400 to every message rather than ignoring it.\n\nEither remove it, or set llm.apiFormat: openai.\n" $k) -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+
+  {{/* The agent-builder path posts a Langflow run endpoint, whose envelope is four fields:
+       input_type, output_type, input_value, session_id. There is nowhere to put a model
+       name, a token cap or a sampling parameter — every one of those belongs to the flow's
+       own Model component and is set in the platform UI, not here. Left renderable they
+       would sit in the Deployment looking authoritative while changing nothing, which is
+       the failure this chart exists to prevent. Same rule as the anthropic block above,
+       one wire format further out.
+
+       LLM_MAX_TOKENS is absent from this list on purpose: values.yaml defaults it to 16384,
+       so rejecting a truthy value would fail the render for everyone who never set it. It is
+       dropped from the environment in _env.tpl instead — the only one of these that is
+       silently ignored rather than refused, and only because a chart default is not a claim
+       the operator made. */}}
+  {{- if eq $fmt "agent-builder" -}}
+    {{- $s := $llm.sampling | default dict -}}
+    {{- $inFlow := dict
+          "LLM_MODEL" (or $wEnvAll.LLM_MODEL $llm.model)
+          "LLM_TEMPERATURE" (or $wEnvAll.LLM_TEMPERATURE $s.temperature)
+          "LLM_TOP_P" (or $wEnvAll.LLM_TOP_P $s.topP)
+          "LLM_REASONING_EFFORT" (or $wEnvAll.LLM_REASONING_EFFORT $s.reasoningEffort)
+          "LLM_SEED" (or $wEnvAll.LLM_SEED $s.seed)
+          "LLM_USE_MAX_COMPLETION_TOKENS" (or $wEnvAll.LLM_USE_MAX_COMPLETION_TOKENS $llm.useMaxCompletionTokens) -}}
+    {{- range $k, $v := $inFlow -}}
+      {{- if $v -}}
+        {{- fail (printf "\n\n%s is set, but LLM_API_FORMAT is \"agent-builder\".\n\nThe Langflow run envelope carries only input_type, output_type, input_value and session_id. This parameter has nowhere to go — the worker never sends it, and the flow's own Model component decides it. Setting it here changes nothing while looking like it does.\n\nRemove it and set the value in the flow, or switch to llm.apiFormat: openai once the OpenAI endpoint is approved.\n" $k) -}}
       {{- end -}}
     {{- end -}}
   {{- end -}}

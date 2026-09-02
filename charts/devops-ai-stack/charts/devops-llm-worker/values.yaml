@@ -50,17 +50,33 @@ serviceAccount:
 # ---------------------------------------------------------------------------
 llm:
   # The WIRE FORMAT, not the vendor: "openai" posts /v1/chat/completions, "anthropic" posts
-  # /v1/messages. A self-hosted model behind an OpenAI-compatible gateway is "openai" —
-  # vLLM, llama.cpp, LiteLLM and TGI all are. Anything else fails the render.
+  # /v1/messages, "agent-builder" posts a Langflow run endpoint. A self-hosted model behind
+  # an OpenAI-compatible gateway is "openai" — vLLM, llama.cpp, LiteLLM and TGI all are.
+  # Anything else fails the render.
+  #
+  # "agent-builder" is a stopgap: it reaches a private model through a self-service flow
+  # that needs no approval, and it is the one path where the MODEL SETTINGS ARE NOT HERE.
+  # Its envelope is input_type/output_type/input_value/session_id and nothing more, so the
+  # flow's own Model component owns the model, the token cap and every sampling parameter.
+  # Flipping this back to "openai" once the OpenAI endpoint is approved is the whole
+  # migration.
   apiFormat: "openai"
 
   # REQUIRED. The endpoint root, e.g. http://vllm.llm:8000/v1 — the path the format
   # expects is appended by the client.
+  #
+  # Under "agent-builder" it is instead the FULL run endpoint, flow id included, because
+  # there is no shared base to append to:
+  #   baseUrl: https://<agent-builder-host>/api/v1/run/<flow-id>
   baseUrl: ""
 
-  # REQUIRED. Whatever name the endpoint answers to; it is passed through verbatim.
+  # Whatever name the endpoint answers to; it is passed through verbatim. REQUIRED under
+  # "openai" and "anthropic", and REJECTED under "agent-builder" — set it in the flow.
   model: ""
 
+  # Not sent under "agent-builder": the run envelope has no field for it and the flow
+  # decides. Dropped from the environment there rather than refused like `model`, only
+  # because this default is the chart's and not something the operator asked for.
   maxTokens: 16384
 
   # Only for a backend that reaches the endpoint through SOCKS. Empty means direct.
@@ -69,13 +85,17 @@ llm:
   # Optional: the config defaults the key to the literal "none", which is what a
   # self-hosted endpoint with no auth expects. Mounted optional, so a Secret that has not
   # been created yet gives a 401 from the endpoint rather than a Pod that never starts.
+  # Sent as `Authorization: Bearer` on the OpenAI path, `x-api-key` on the other two.
   existingSecret: "llm-api-key-secret"
   apiKeyKey: "api-key"
 
-  # Sampling. temperature and topP reach both wire formats; the other three are sent on
-  # the OpenAI path ONLY, and the chart therefore renders them only under
-  # apiFormat: openai. Setting one under "anthropic" fails the render rather than
+  # Sampling. temperature and topP reach both of the OpenAI/Anthropic wire formats; the
+  # other three are sent on the OpenAI path ONLY, and the chart therefore renders them only
+  # under apiFormat: openai. Setting one under "anthropic" fails the render rather than
   # producing a 400 on every request from an endpoint that rejects unknown fields.
+  #
+  # ALL FIVE are rejected under "agent-builder" — the run envelope carries none of them,
+  # so a value here would change nothing while looking like it does. Set them in the flow.
   sampling:
     temperature: ~
     topP: ~

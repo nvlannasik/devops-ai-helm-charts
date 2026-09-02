@@ -99,6 +99,30 @@ jobs:
           grep -q 'value: "heavy"' "$out"
           grep -q "name: LLM_ROUTE_LIGHT" "$out"
 
+      # The agent-builder path is the only wire format where model and maxTokens are
+      # NOT sent — the Langflow run envelope has no field for either. maxTokens has a
+      # chart default, so nothing in values.yaml can be read as the operator asking for
+      # it; it is dropped here rather than refused in _validate.tpl, and this step is
+      # what keeps that drop honest. A rendered LLM_MAX_TOKENS would sit in the
+      # Deployment looking authoritative while the flow decides the real number.
+      - name: the agent-builder format drops what the flow owns
+        run: |
+          set -eu
+          out="${TMPDIR:-/tmp}/agent-builder.yaml"
+          helm template t charts/devops-ai-stack \
+            --set devops-ai-agent.mcp.authToken=ci \
+            --set devops-mcp-server.mcp.authToken=ci \
+            --set devops-llm-worker.enabled=true \
+            --set devops-llm-worker.llm.apiFormat=agent-builder \
+            --set devops-llm-worker.llm.baseUrl=https://host.example/api/v1/run/flow-id \
+            -s charts/devops-llm-worker/templates/deployment.yaml > "$out"
+          grep -q 'value: "agent-builder"' "$out"
+          grep -q "name: LLM_BASE_URL" "$out"
+          grep -q "name: LLM_MODEL" "$out" && exit 1
+          grep -q "name: LLM_MAX_TOKENS" "$out" && exit 1
+          # No model required on this path, unlike the other two.
+          echo "agent-builder renders without a model and without inert token settings"
+
       # The cross-service checks are the reason this chart exists, so a silent
       # regression in them is the failure that matters most. Each case below MUST fail
       # to render; a passing render here is the bug.
@@ -226,6 +250,19 @@ jobs:
             --set devops-llm-worker.llm.useMaxCompletionTokens=true
           expect_fail "a reasoning effort the API does not accept" $WORKER \
             --set devops-llm-worker.llm.sampling.reasoningEffort=extreme
+          # The Langflow run envelope is input_type/output_type/input_value/session_id and
+          # nothing else, so a model name or a sampling knob here is a value the operator
+          # wrote, the worker never sends, and the flow silently overrides.
+          AB="--set devops-llm-worker.enabled=true
+              --set devops-llm-worker.llm.apiFormat=agent-builder
+              --set devops-llm-worker.llm.baseUrl=https://host.example/api/v1/run/flow-id"
+          expect_fail "a model name under the agent-builder wire format" $AB \
+            --set devops-llm-worker.llm.model=gpt-4
+          expect_fail "a sampling knob under the agent-builder wire format" $AB \
+            --set devops-llm-worker.llm.sampling.temperature=0.2
+          expect_fail "an agent-builder run endpoint that was never set" \
+            --set devops-llm-worker.enabled=true \
+            --set devops-llm-worker.llm.apiFormat=agent-builder
           # The worker DERIVES its own gitops flag from (credential && repo), so each of
           # these boots, reports gitops disabled, and drops the agent's proposals.
           expect_fail "the GitOps bridge with no repo to open PRs against" $WORKER \

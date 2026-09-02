@@ -17,11 +17,15 @@ this worker meet on those queues — a value that means nothing on one side alon
 {{- $sqs := .Values.sqs | default dict -}}
 {{- $gitops := .Values.gitops | default dict -}}
 
+{{/* model and maxTokens live in the flow on the agent-builder path — its run envelope has
+     no field for either — so they are dropped rather than rendered inert. maxTokens has a
+     chart default, which is why this is a gate here and not a rejection in _validate.tpl. */}}
+{{- $inFlow := eq ($llm.apiFormat | default "openai") "agent-builder" -}}
 {{- $plain := dict
       "LLM_API_FORMAT" $llm.apiFormat
       "LLM_BASE_URL" $llm.baseUrl
-      "LLM_MODEL" $llm.model
-      "LLM_MAX_TOKENS" $llm.maxTokens
+      "LLM_MODEL" (ternary "" ($llm.model | toString) $inFlow)
+      "LLM_MAX_TOKENS" (ternary "" ($llm.maxTokens | toString) $inFlow)
       "LLM_SOCKS_PROXY" $llm.socksProxy
       "SQS_POLL_WAIT_SECONDS" $sqs.pollWaitSeconds
       "SQS_MAX_MESSAGES" $sqs.maxMessages
