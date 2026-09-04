@@ -195,6 +195,87 @@ nothing in the release can use.
   {{- end -}}
 {{- end -}}
 
+{{/* ---- more than one private LLM: one request queue per MODEL ----
+
+The pair check above is the whole story only while there is one private LLM. With two, the
+queue is what makes a model reachable: the agent's route picks a NAME, the name carries a
+queue, and the worker on that queue is the model that answers. Point two backends at one
+queue and the route becomes a coin flip — whichever worker grabs the message first replies,
+and the symptom is an answer from the wrong model, which reads as a bad answer rather than
+as a misconfiguration. That is precisely the class of bug this file exists to move from 3am
+to CI.
+
+This is also the one agreement neither side can check alone. The agent knows which queues it
+writes to and llm-worker knows which one it polls; only the umbrella sees both lists.
+*/}}
+{{- if and $agentOn $workerOn -}}
+  {{- $gq := ($g.sqs) | default dict -}}
+  {{- $workerEnv := $worker.env | default dict -}}
+  {{- $globalReq := $agentEnvAll.SQS_REQUEST_QUEUE_NAME | default $gq.requestQueue -}}
+
+  {{- $privates := list -}}
+  {{- range $b := (($agent.llm | default dict).backends | default list) -}}
+    {{- if eq ($b.kind | default "") "private-llm" -}}
+      {{- $privates = append $privates $b -}}
+    {{- end -}}
+  {{- end -}}
+
+  {{- if $privates -}}
+    {{/* What each worker actually polls, read the way its Deployment renders it: the
+         entry's own queue, else the chart-level one, else its env override, else global.
+         An empty `workers` is the single Deployment this chart has always produced. */}}
+    {{- $entries := $worker.workers | default list -}}
+    {{- $pollers := dict -}}
+    {{- if $entries -}}
+      {{- range $i, $w := $entries -}}
+        {{- $wn := $w.name | default (printf "workers[%d]" $i) -}}
+        {{- $q := $w.requestQueue | default $worker.requestQueue | default $workerEnv.SQS_REQUEST_QUEUE_NAME | default $gq.requestQueue -}}
+        {{- if not $q -}}
+          {{- fail (printf "\n\ndevops-llm-worker.workers[%d] (%q) has no request queue, and neither global.sqs.requestQueue nor devops-llm-worker.requestQueue supplies one.\n\nA worker with no queue polls nothing.\n" $i $wn) -}}
+        {{- end -}}
+        {{- if hasKey $pollers $q -}}
+          {{- fail (printf "\n\ndevops-llm-worker workers %q and %q both poll %q.\n\nOne queue per MODEL. Two workers on one queue race for every message, so the agent's choice of backend decides nothing — whichever pod receives first is the model that answers.\n\nReplicas of ONE model are the supported way to scale: set replicaCount on that entry instead. They share the queue on purpose, and SQS spreads the backlog across them because every request carries its own MessageGroupId.\n" (index $pollers $q) $wn $q) -}}
+        {{- end -}}
+        {{- $_ := set $pollers $q $wn -}}
+      {{- end -}}
+    {{- else -}}
+      {{- $q := $worker.requestQueue | default $workerEnv.SQS_REQUEST_QUEUE_NAME | default $gq.requestQueue -}}
+      {{- if $q -}}
+        {{- $_ := set $pollers $q "devops-llm-worker" -}}
+      {{- end -}}
+    {{- end -}}
+
+    {{/* Every private-llm backend must have a worker on the queue it writes to. Iterated
+         over the WHOLE list so $i is the index the values file actually shows. */}}
+    {{- range $i, $b := (($agent.llm | default dict).backends | default list) -}}
+      {{- if eq ($b.kind | default "") "private-llm" -}}
+      {{- if and (gt (len $privates) 1) (not $b.requestQueue) -}}
+        {{- fail (printf "\n\ndevops-ai-agent.llm.backends[%d] (%q) is private-llm but names no requestQueue, and it is not the only one.\n\nWith %d private-llm backends every one of them states its own queue. Inheriting global.sqs.requestQueue for one while another overrides is the asymmetry that hides a forgotten queue — the agent rejects it at boot for the same reason.\n\n  backends:\n    - name: %s\n      kind: private-llm\n      requestQueue: llm-request-%s.fifo\n" $i $b.name (len $privates) $b.name $b.name) -}}
+      {{- end -}}
+      {{- if and $b.requestQueue (not (hasSuffix ".fifo" $b.requestQueue)) -}}
+        {{- fail (printf "\n\ndevops-ai-agent.llm.backends[%d] (%q) has requestQueue %q, which is not a FIFO queue name.\n\nEvery request carries a MessageGroupId and a standard queue rejects it. Worse, the agent CREATES a missing queue on first use, so a non-.fifo name produces a standard queue and then fails on every send instead of at boot.\n" $i $b.name $b.requestQueue) -}}
+      {{- end -}}
+      {{- $q := $b.requestQueue | default $globalReq -}}
+      {{- if not (hasKey $pollers $q) -}}
+        {{- fail (printf "\n\ndevops-ai-agent.llm.backends[%d] (%q) writes to SQS queue %q, which no llm-worker polls.\n\nWorkers currently polling: %s\n\nEvery call routed to %q would sit on that queue until the agent's llm.sqs.timeoutSeconds. Add the worker:\n\n  devops-llm-worker:\n    workers:\n      - name: %s\n        requestQueue: %s\n        llm:\n          baseUrl: http://<endpoint>/v1\n          model: <model>\n" $i $b.name $q (ternary (join ", " (keys $pollers)) "(none)" (gt (len $pollers) 0)) $b.name $b.name $q) -}}
+      {{- end -}}
+      {{- end -}}
+    {{- end -}}
+
+    {{/* And the mirror: a worker polling a queue nobody writes to is a pod that will never
+         receive a message. Only checkable from here, same as the direction above. */}}
+    {{- $claimed := dict -}}
+    {{- range $b := $privates -}}
+      {{- $_ := set $claimed ($b.requestQueue | default $globalReq) true -}}
+    {{- end -}}
+    {{- range $q, $wn := $pollers -}}
+      {{- if not (hasKey $claimed $q) -}}
+        {{- fail (printf "\n\ndevops-llm-worker %q polls SQS queue %q, which no agent backend writes to.\n\nQueues the agent's private-llm backends write to: %s\n\nThat worker will never receive a message. Either point a backend's requestQueue at %q, or drop the worker.\n" $wn $q (join ", " (keys $claimed)) $q) -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+
 {{/* ---- agent: the LLM backend list ----
 
 The agent's own registry validates these at boot; the value of repeating the rules here

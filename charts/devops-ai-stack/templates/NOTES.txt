@@ -2,12 +2,21 @@
 {{- $agent := index .Values "devops-ai-agent" | default dict -}}
 {{- $mcp := index .Values "devops-mcp-server" | default dict -}}
 {{- $worker := index .Values "devops-llm-worker" | default dict -}}
+{{- $wbase := $worker.fullnameOverride | default "devops-llm-worker" -}}
 {{ .Chart.Name }} {{ .Chart.Version }} installed as {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
 
 Deployed:
 {{ if ne $agent.enabled false }}  agent       {{ $agent.fullnameOverride | default "devops-ai-agent" }}{{ else }}  agent       (disabled){{ end }}
 {{ if ne $mcp.enabled false }}  mcp-server  {{ $mcp.fullnameOverride | default "devops-mcp-server" }}{{ else }}  mcp-server  (disabled){{ end }}
-{{ if $worker.enabled }}  llm-worker  {{ $worker.fullnameOverride | default "devops-llm-worker" }}{{ else }}  llm-worker  (disabled — the agent calls its LLM backends directly){{ end }}
+{{- if not $worker.enabled }}
+  llm-worker  (disabled — the agent calls its LLM backends directly)
+{{- else if $worker.workers }}
+{{- range $w := $worker.workers }}
+  llm-worker  {{ $wbase }}-{{ $w.name }}  polls {{ $w.requestQueue | default ($g.sqs | default dict).requestQueue }}
+{{- end }}
+{{- else }}
+  llm-worker  {{ $wbase }}
+{{- end }}
 {{- if ($g.postgresql | default dict).enabled }}
   postgres    {{ ($g.postgresql).fullnameOverride | default (printf "%s-postgresql" .Release.Name) }} (bundled)
 {{- end }}

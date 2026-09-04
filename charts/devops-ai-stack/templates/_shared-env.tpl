@@ -50,13 +50,20 @@ this chart existed to prevent.
 {{/*
 SQS queue names and region. Both the agent and the worker read the same four values;
 `which` names them so adding a queue means editing one list.
+
+The REQUEST queue is the one exception to "global is the value": with more than one private
+LLM there is one request queue per MODEL, and each worker polls only its own. So a workload
+may name its own in `.Values.requestQueue`, which wins over the global. The RESPONSE queue
+has no such override and never will — replies are routed by requestId, never by which model
+produced them, so every worker writes to the one queue the agent reads.
 */}}
 {{- define "devops-ai.sqsEnv" -}}
 {{- $sqs := (.Values.global | default dict).sqs | default dict -}}
 {{- $ownEnv := .Values.env | default dict -}}
-{{- if and $sqs.requestQueue (not $ownEnv.SQS_REQUEST_QUEUE_NAME) }}
+{{- $req := .Values.requestQueue | default $sqs.requestQueue -}}
+{{- if and $req (not $ownEnv.SQS_REQUEST_QUEUE_NAME) }}
 - name: SQS_REQUEST_QUEUE_NAME
-  value: {{ $sqs.requestQueue | quote }}
+  value: {{ $req | quote }}
 {{- end }}
 {{- if and $sqs.responseQueue (not $ownEnv.SQS_RESPONSE_QUEUE_NAME) }}
 - name: SQS_RESPONSE_QUEUE_NAME

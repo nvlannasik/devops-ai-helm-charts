@@ -1,3 +1,41 @@
+{{/*
+One Deployment per PRIVATE LLM.
+
+Helm cannot instantiate a subchart twice, so a second model is a second entry in
+`.Values.workers` rather than a second release. Each entry is deep-merged over this
+chart's values — it names only what differs — and renders through the same helpers, so
+there is one Deployment definition here, not one per model.
+
+Empty `workers` renders exactly what it always did: a single Deployment from the root
+values. That is the whole compatibility story.
+
+nameOverride is set alongside fullnameOverride, and it matters more: selectorLabels are
+built from `devops-ai.name`, so leaving it alone would give every worker the SAME label
+selector — two Deployments fighting over each other's Pods, which reads as a rollout that
+never settles rather than as a naming mistake.
+
+The ServiceAccount is NOT in this loop. It is rendered once, from the root values, and
+shared: these are one workload class (read a request queue, write the response queue) and
+one role covers them.
+*/}}
+{{- $base := include "devops-ai.fullname" . -}}
+{{- $root := . -}}
+{{- $entries := .Values.workers | default list -}}
+{{- if not $entries -}}
+{{- $entries = list (dict) -}}
+{{- end -}}
+{{- range $i, $w := $entries }}
+{{- $wname := $w.name | default "" }}
+{{- if and (gt (len $entries) 1) (not $wname) }}
+{{- fail (printf "devops-llm-worker.workers[%d] has no name.\n\nThe name is the Deployment suffix and the label selector — without it two workers render as the same workload." $i) }}
+{{- end }}
+{{- $vals := merge (deepCopy (omit $w "name")) (deepCopy $root.Values) }}
+{{- if $wname }}
+{{- $_ := set $vals "nameOverride" (printf "%s-%s" $base $wname) }}
+{{- $_ := set $vals "fullnameOverride" (printf "%s-%s" $base $wname) }}
+{{- end }}
+{{- with (dict "Values" $vals "Chart" $root.Chart "Release" $root.Release "Capabilities" $root.Capabilities "Template" $root.Template) }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -86,3 +124,5 @@ spec:
         {{- . | nindent 8 }}
         {{- end }}
       {{- end }}
+{{- end }}
+{{- end }}

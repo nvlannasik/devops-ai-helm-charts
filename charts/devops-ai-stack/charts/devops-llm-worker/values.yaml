@@ -14,6 +14,45 @@ enabled: true
 nameOverride: ""
 fullnameOverride: "devops-llm-worker"
 
+# ---------------------------------------------------------------------------
+# MORE THAN ONE PRIVATE LLM
+#
+# Helm cannot instantiate a subchart twice, so a second model does not mean a second
+# release — it means a second entry here. Each entry is DEEP-MERGED OVER the values in
+# this file, so it names only what differs: the model, the endpoint, and the queue.
+#
+#   workers:
+#     - name: qwen
+#       requestQueue: llm-request-qwen.fifo
+#       llm:
+#         baseUrl: http://vllm-qwen.llm:8000/v1
+#         model: Qwen3-235B
+#     - name: deepseek
+#       requestQueue: llm-request-deepseek.fifo
+#       llm:
+#         baseUrl: http://vllm-ds.llm:8000/v1
+#         model: DeepSeek-V3
+#
+# `name` is required and becomes the Deployment suffix — devops-llm-worker-qwen. Empty
+# (the default) renders exactly one Deployment named devops-llm-worker from the values
+# below, which is what every existing release already gets: adding this list changed
+# nothing for anyone who does not set it.
+#
+# One entry per MODEL, never per replica. Replicas of one model belong on that entry's
+# replicaCount: they share a queue, and SQS spreads the backlog across them because every
+# request carries its own MessageGroupId. Two entries on ONE queue is the failure this
+# exists to prevent — the agent's route picks a model, and whichever worker grabs the
+# message first is the one that answers. The umbrella rejects it.
+#
+# The ServiceAccount is shared by every entry. They are one workload class — read a
+# request queue, write the response queue — so one role covers them. Give a model its own
+# identity by setting serviceAccount.roleArn on its entry only if that stops being true.
+workers: []
+
+# The SQS request queue THIS worker polls. Empty means global.sqs.requestQueue, which is
+# right when there is one private LLM. With `workers` set, each entry names its own.
+requestQueue: ""
+
 replicaCount: 1
 
 image:

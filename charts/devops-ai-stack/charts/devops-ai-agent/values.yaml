@@ -131,6 +131,11 @@ alertWebhook:
 #   model          claude and openai-compatible.
 #   baseUrl        openai-compatible only.
 #   contextTokens  optional; lets the router skip a backend whose window is too small.
+#   requestQueue   private-llm only. The SQS request queue the worker for THIS model polls.
+#                  One queue per model, not per replica. Omit it when there is exactly one
+#                  private-llm backend — the global.sqs.requestQueue applies. With two or
+#                  more, every one of them must name its own, or the router's choice of
+#                  model becomes whichever worker grabs the message first.
 #   existingSecret + apiKeyKey
 #                  the API key, from a Secret. claude and openai-compatible.
 #                  apiKeyKey defaults to LLM_BACKEND_<N>_KEY — the same name the agent
@@ -154,8 +159,12 @@ llm:
     #   model: claude-haiku-4-5
     #   existingSecret: devops-agent-secret
     #   apiKeyKey: CLAUDE_KEY
-    # - name: private-llm
+    # - name: qwen
     #   kind: private-llm      # takes the SQS path — needs devops-llm-worker enabled
+    #   requestQueue: llm-request-qwen.fifo     # only needed with 2+ private-llm backends
+    # - name: deepseek
+    #   kind: private-llm
+    #   requestQueue: llm-request-deepseek.fifo
 
   # Router policy. Names must match `backends[].name`; the agent fails at boot otherwise.
   # heavy is the failover chain for investigations, light for cheap calls. Failover is
