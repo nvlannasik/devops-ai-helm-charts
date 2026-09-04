@@ -256,8 +256,20 @@ writes to and llm-worker knows which one it polls; only the umbrella sees both l
         {{- fail (printf "\n\ndevops-ai-agent.llm.backends[%d] (%q) has requestQueue %q, which is not a FIFO queue name.\n\nEvery request carries a MessageGroupId and a standard queue rejects it. Worse, the agent CREATES a missing queue on first use, so a non-.fifo name produces a standard queue and then fails on every send instead of at boot.\n" $i $b.name $b.requestQueue) -}}
       {{- end -}}
       {{- $q := $b.requestQueue | default $globalReq -}}
+      {{/* externalWorker: the queue is polled by an llm-worker this release does not
+           render — one deployed next to the model it serves, on another host or in
+           another cluster. Nothing here can see it, so the operator asserts it. The
+           assertion is narrow on purpose: it suppresses ONLY the has-a-poller check
+           below, and buys a stricter one — if this release DOES render a worker on that
+           queue, the two race and the answer stops being the model the route asked for. */}}
+      {{- if $b.externalWorker -}}
+        {{- if hasKey $pollers $q -}}
+          {{- fail (printf "\n\ndevops-ai-agent.llm.backends[%d] (%q) is marked externalWorker, but devops-llm-worker %q in THIS release also polls %q.\n\nTwo consumers on one FIFO queue race for every message. A request routed to %q would be answered by whichever grabbed it first, so roughly half the answers come from the wrong model — and nothing reports an error, because both workers reply in the same shape.\n\nEither drop the in-release worker on that queue, or drop externalWorker.\n" $i $b.name (index $pollers $q) $q $b.name) -}}
+        {{- end -}}
+      {{- else -}}
       {{- if not (hasKey $pollers $q) -}}
-        {{- fail (printf "\n\ndevops-ai-agent.llm.backends[%d] (%q) writes to SQS queue %q, which no llm-worker polls.\n\nWorkers currently polling: %s\n\nEvery call routed to %q would sit on that queue until the agent's llm.sqs.timeoutSeconds. Add the worker:\n\n  devops-llm-worker:\n    workers:\n      - name: %s\n        requestQueue: %s\n        llm:\n          baseUrl: http://<endpoint>/v1\n          model: <model>\n" $i $b.name $q (ternary (join ", " (keys $pollers)) "(none)" (gt (len $pollers) 0)) $b.name $b.name $q) -}}
+        {{- fail (printf "\n\ndevops-ai-agent.llm.backends[%d] (%q) writes to SQS queue %q, which no llm-worker polls.\n\nWorkers currently polling: %s\n\nEvery call routed to %q would sit on that queue until the agent's llm.sqs.timeoutSeconds. Add the worker:\n\n  devops-llm-worker:\n    workers:\n      - name: %s\n        requestQueue: %s\n        llm:\n          baseUrl: http://<endpoint>/v1\n          model: <model>\n\nOr, if a worker outside this release already polls it:\n\n  devops-ai-agent:\n    llm:\n      backends:\n        - name: %s\n          externalWorker: true\n" $i $b.name $q (ternary (join ", " (keys $pollers)) "(none)" (gt (len $pollers) 0)) $b.name $b.name $q $b.name) -}}
+      {{- end -}}
       {{- end -}}
       {{- end -}}
     {{- end -}}

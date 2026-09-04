@@ -136,6 +136,13 @@ alertWebhook:
 #                  private-llm backend — the global.sqs.requestQueue applies. With two or
 #                  more, every one of them must name its own, or the router's choice of
 #                  model becomes whichever worker grabs the message first.
+#   externalWorker private-llm only. Set true when the llm-worker polling this queue is
+#                  NOT part of this release — one running next to the model it serves, on
+#                  another host or in another cluster. The umbrella cannot see such a
+#                  worker, so without this it refuses to render, reporting a queue that
+#                  nothing polls. Setting it suppresses only that check, and adds one: if
+#                  this release DOES render a worker on the same queue, the two race and
+#                  the render fails instead.
 #   existingSecret + apiKeyKey
 #                  the API key, from a Secret. claude and openai-compatible.
 #                  apiKeyKey defaults to LLM_BACKEND_<N>_KEY — the same name the agent
@@ -162,6 +169,10 @@ llm:
     # - name: qwen
     #   kind: private-llm      # takes the SQS path — needs devops-llm-worker enabled
     #   requestQueue: llm-request-qwen.fifo     # only needed with 2+ private-llm backends
+    # - name: on-prem
+    #   kind: private-llm
+    #   requestQueue: llm-request-on-prem.fifo
+    #   externalWorker: true   # its worker runs beside the model, not in this release
     # - name: deepseek
     #   kind: private-llm
     #   requestQueue: llm-request-deepseek.fifo
