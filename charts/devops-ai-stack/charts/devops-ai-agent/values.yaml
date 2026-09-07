@@ -131,6 +131,12 @@ alertWebhook:
 #   model          claude and openai-compatible.
 #   baseUrl        openai-compatible only.
 #   contextTokens  optional; lets the router skip a backend whose window is too small.
+#   maxTokens      optional output ceiling for THIS backend. The budget reserves the LARGEST
+#                  across all of them, so the answer fits whichever one replies. For claude and
+#                  openai-compatible it is sent on the wire — one global value cannot serve a
+#                  reasoning model and a fast one. For private-llm nothing is sent: llm-worker
+#                  holds its own LLM_MAX_TOKENS, so this DECLARES that worker's setting, and
+#                  the umbrella fails the render if the two disagree.
 #   requestQueue   private-llm only. The SQS request queue the worker for THIS model polls.
 #                  One queue per model, not per replica. Omit it when there is exactly one
 #                  private-llm backend — the global.sqs.requestQueue applies. With two or

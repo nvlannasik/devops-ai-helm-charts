@@ -226,6 +226,7 @@ writes to and llm-worker knows which one it polls; only the umbrella sees both l
          An empty `workers` is the single Deployment this chart has always produced. */}}
     {{- $entries := $worker.workers | default list -}}
     {{- $pollers := dict -}}
+    {{- $ceilings := dict -}}
     {{- if $entries -}}
       {{- range $i, $w := $entries -}}
         {{- $wn := $w.name | default (printf "workers[%d]" $i) -}}
@@ -237,11 +238,13 @@ writes to and llm-worker knows which one it polls; only the umbrella sees both l
           {{- fail (printf "\n\ndevops-llm-worker workers %q and %q both poll %q.\n\nOne queue per MODEL. Two workers on one queue race for every message, so the agent's choice of backend decides nothing — whichever pod receives first is the model that answers.\n\nReplicas of ONE model are the supported way to scale: set replicaCount on that entry instead. They share the queue on purpose, and SQS spreads the backlog across them because every request carries its own MessageGroupId.\n" (index $pollers $q) $wn $q) -}}
         {{- end -}}
         {{- $_ := set $pollers $q $wn -}}
+        {{- $_ := set $ceilings $q (($w.llm | default dict).maxTokens | default ($worker.llm | default dict).maxTokens) -}}
       {{- end -}}
     {{- else -}}
       {{- $q := $worker.requestQueue | default $workerEnv.SQS_REQUEST_QUEUE_NAME | default $gq.requestQueue -}}
       {{- if $q -}}
         {{- $_ := set $pollers $q "devops-llm-worker" -}}
+        {{- $_ := set $ceilings $q (($worker.llm | default dict).maxTokens) -}}
       {{- end -}}
     {{- end -}}
 
@@ -256,6 +259,27 @@ writes to and llm-worker knows which one it polls; only the umbrella sees both l
         {{- fail (printf "\n\ndevops-ai-agent.llm.backends[%d] (%q) has requestQueue %q, which is not a FIFO queue name.\n\nEvery request carries a MessageGroupId and a standard queue rejects it. Worse, the agent CREATES a missing queue on first use, so a non-.fifo name produces a standard queue and then fails on every send instead of at boot.\n" $i $b.name $b.requestQueue) -}}
       {{- end -}}
       {{- $q := $b.requestQueue | default $globalReq -}}
+      {{/* ---- the output ceiling has to be the same number on both sides ----
+
+           The agent sends NO ceiling to a private-llm backend: llm-worker holds its own
+           LLM_MAX_TOKENS. So the agent's maxTokens for that backend is a declaration of the
+           worker's setting, used for one thing — how much window to keep clear for the reply.
+
+           Get it wrong low and nothing errors anywhere: the worker answers with more tokens
+           than the agent reserved, into a window that was never kept for them. That is a
+           quiet truncation, and it already happened — a worker on 16384 behind an agent
+           reserving 8096+1024 returned 14564 output tokens.
+
+           Only the UNDER-reserve fails. A worker that emits less than the agent reserved
+           just leaves the history shorter than it had to be, and that is the harmless side.
+           Neither side can see the other, which is the whole reason this lives here. */}}
+      {{- if hasKey $ceilings $q -}}
+        {{- $workerMax := (index $ceilings $q) | default 16384 | int -}}
+        {{- $agentMax := $b.maxTokens | default ($agent.llm | default dict).maxTokens | default 8096 | int -}}
+        {{- if gt $workerMax $agentMax -}}
+          {{- fail (printf "\n\nOutput ceiling mismatch on SQS queue %q.\n\n  devops-llm-worker  %s        llm.maxTokens = %d   (what it may emit)\n  devops-ai-agent    backends[%d] %q  maxTokens     = %d   (what the agent reserves for)\n\nThe agent sends no ceiling over SQS — the worker holds its own — so the agent's value is a DECLARATION of the worker's, and its only job is reserving that much window for the reply. Declared lower than the truth, the worker answers with more tokens than were kept clear and the reply is quietly truncated: nothing errors, because the reserve is a promise the agent makes to itself.\n\nState the worker's number on the backend:\n\n  devops-ai-agent:\n    llm:\n      backends:\n        - name: %s\n          maxTokens: %d\n" $q (index $pollers $q) $workerMax $i $b.name $agentMax $b.name $workerMax) -}}
+        {{- end -}}
+      {{- end -}}
       {{/* externalWorker: the queue is polled by an llm-worker this release does not
            render — one deployed next to the model it serves, on another host or in
            another cluster. Nothing here can see it, so the operator asserts it. The

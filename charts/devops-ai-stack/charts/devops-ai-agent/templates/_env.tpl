@@ -97,6 +97,7 @@ map; a list has no gaps to introduce. Order here IS the index order. */}}
   {{- $_ := set $plain (printf "LLM_BACKEND_%d_MODEL" $n) $b.model -}}
   {{- $_ := set $plain (printf "LLM_BACKEND_%d_BASE_URL" $n) $b.baseUrl -}}
   {{- $_ := set $plain (printf "LLM_BACKEND_%d_CONTEXT_TOKENS" $n) $b.contextTokens -}}
+  {{- $_ := set $plain (printf "LLM_BACKEND_%d_MAX_TOKENS" $n) $b.maxTokens -}}
   {{/* private-llm only. Unset means the global SQS_REQUEST_QUEUE_NAME, which is what a
        lone private-llm uses; the agent REQUIRES it once a second one exists. */}}
   {{- $_ := set $plain (printf "LLM_BACKEND_%d_REQUEST_QUEUE" $n) $b.requestQueue -}}
