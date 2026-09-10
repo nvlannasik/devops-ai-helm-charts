@@ -76,6 +76,17 @@ rules:
     resources: ["kustomizations"]
     verbs: ["get", "list"]
 
+  {{- if .Values.rbac.readAllCustomResources }}
+  # k8s_find_unused_resources cross-checks candidates against every custom resource before
+  # it will call one unused — an operator that references a ConfigMap by name leaves no
+  # ownerReference, so the only way to see it is to read the CRs. Which groups an operator
+  # occupies is not knowable from here, hence the wildcard. get/list only: no mutating verb
+  # is granted by this rule under any value.
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list"]
+  {{- end }}
+
   {{- if .Values.rbac.allowWrite }}
   # ---- mutating: the guarded remediation tools ----
   # Reached only when writeTools.enabled is also true AND the target namespace is in

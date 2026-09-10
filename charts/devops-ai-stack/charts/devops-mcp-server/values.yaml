@@ -216,6 +216,20 @@ rbac:
   # those go through a pull request.
   allowFluxReconcile: false
 
+  # Backs the CRD cross-check in k8s_find_unused_resources: before that tool reports a
+  # ConfigMap or Secret as unused it looks for the name in EVERY custom resource in the
+  # cluster, because an operator that references an object by name leaves no
+  # ownerReference and no pod reference. It cannot know which groups an operator will
+  # occupy, so this is get/list on all of them.
+  #
+  # get/list only, never a mutating verb. The marginal exposure is smaller than it looks:
+  # the rules above already grant cluster-wide read on Secrets, which is the sensitive
+  # part. Turn it off and the tool still runs — it reports the CRDs it could not read in
+  # `crossCheck.crdsUnreadable` and downgrades its own note from "not referenced" to
+  # "not referenced as far as I could look", which is the honest claim but not a useful
+  # one for a cleanup decision.
+  readAllCustomResources: true
+
   # Extra rules appended verbatim, for tools this chart does not know about.
   extraRules: []
 

@@ -275,6 +275,7 @@ ran on whatever the image's own `ENV TRANSPORT=http` said.
 | `devops-llm-worker.gitops.repo` | `""` | The only repository the PR handler may touch. |
 | `devops-mcp-server.rbac.allowWrite` | `false` | Cluster-wide write. See below. |
 | `devops-mcp-server.rbac.allowFluxReconcile` | `false` | Lets `flux_reconcile` annotate HelmReleases. |
+| `devops-mcp-server.rbac.readAllCustomResources` | `true` | `get`/`list` on all API groups, for the CRD cross-check in `k8s_find_unused_resources`. See below. |
 | `<service>.env.NODE_ENV` | `prod` | `prod`, not `production` — all three compare the string exactly. |
 
 The backing-service switches are under `global` rather than beside the Bitnami values
@@ -355,6 +356,25 @@ into its Pod. A credential in a Pod that has no use for it is a credential in on
 place than necessary.
 
 ### Remediation is bounded twice
+
+### `readAllCustomResources`
+
+On by default, and it is a **read** grant: `get`/`list` on `apiGroups: ["*"], resources: ["*"]`.
+No value of this flag emits a mutating verb.
+
+It exists for one tool. Before `k8s_find_unused_resources` reports a ConfigMap or Secret as
+unused, it looks for that name in every custom resource in the cluster — an operator that
+references an object **by name** leaves no `ownerReference` and no pod reference, so reading the
+CRs is the only way to see it. Which API groups an operator will occupy is not knowable from a
+chart, hence the wildcard.
+
+Turning it off does not break the tool: it reports the CRDs it could not read in
+`crossCheck.crdsUnreadable` and downgrades its own note from "not referenced" to "not referenced
+as far as I could look". That is the honest claim, but not a useful one to act on. Turn it off if
+your cluster's policy forbids the wildcard, and expect the cleanup list to stay advisory.
+
+The marginal exposure is smaller than the wildcard suggests: the rules above this one already
+grant cluster-wide read on **Secrets**, which is the sensitive part of "read everything".
 
 `devops-mcp-server.rbac.allowWrite` grants the ServiceAccount cluster-wide write. The
 inner bound is `writeTools.enabled` and its `allowedNamespaces`. Narrowing the namespace
