@@ -107,6 +107,20 @@ rules:
     verbs: ["delete"]
   {{- end }}
 
+  {{- if .Values.rbac.allowOrphanDelete }}
+  # ---- k8s_delete_orphan ----
+  # Objects with no controller behind them, so nothing recreates what this removes. Exactly
+  # the kinds a stored manifest restores — the tool captures one immediately before deleting.
+  # secrets and persistentvolumeclaims are deliberately NOT here: a Secret's backup is its
+  # credentials, a PVC's manifest is not its data, and the tool refuses both regardless.
+  - apiGroups: [""]
+    resources: ["configmaps", "services", "serviceaccounts"]
+    verbs: ["delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["delete"]
+  {{- end }}
+
   {{- if .Values.rbac.allowFluxReconcile }}
   # ---- flux_reconcile ----
   # Annotates a HelmRelease with reconcile.fluxcd.io/{requestedAt,forceAt} so Flux

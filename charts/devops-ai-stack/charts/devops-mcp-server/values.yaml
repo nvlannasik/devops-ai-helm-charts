@@ -211,6 +211,20 @@ rbac:
   # cluster-wide write grant nothing uses.
   allowWrite: false
 
+  # Backs k8s_delete_orphan, and it is a SEPARATE switch from allowWrite on purpose.
+  # allowWrite grants patch/update plus delete-on-pods, and every one of those is
+  # recoverable: a patched Deployment can be patched back, a deleted pod is recreated by
+  # its controller. This one grants delete on objects with no controller behind them, so
+  # someone turning on remediation for rolling restarts must not get it by implication.
+  #
+  # Scoped to exactly the kinds a stored manifest restores. Secrets and PVCs are absent
+  # from the list and the tool refuses them anyway: a Secret's backup is its credentials,
+  # and a PVC's manifest is not its data.
+  #
+  # Requires allowWrite — the tool is registered by writeTools.enabled, so this grant
+  # without it is a standing delete credential nothing can use.
+  allowOrphanDelete: false
+
   # Lets the flux_reconcile tool annotate a HelmRelease so Flux re-applies what the repo
   # declares. It only ever RESTORES declared state — spec.values are never written here,
   # those go through a pull request.

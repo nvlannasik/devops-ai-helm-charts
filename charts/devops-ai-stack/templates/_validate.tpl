@@ -134,6 +134,14 @@ nothing in the release can use.
   {{- if and $rbacWrite (not $writeOn) -}}
     {{- fail "\n\ndevops-mcp-server.rbac.allowWrite is true, but writeTools.enabled is false.\n\nThe ClusterRole grants cluster-wide patch/update/delete and nothing in this release can use it — a standing mutating credential with no consumer.\n\nSet writeTools.enabled: true (with allowedNamespaces) if remediation is wanted, or rbac.allowWrite: false.\n" -}}
   {{- end -}}
+  {{/* allowOrphanDelete grants delete on objects nothing recreates, so the only direction
+       worth failing on is the one that leaves the grant standing with no consumer. The
+       opposite direction is fine and deliberate: writeTools without it means k8s_delete_orphan
+       registers and refuses on RBAC, which is the correct answer for an operator who wants
+       restarts but not deletions. */}}
+  {{- if and ($rbac.allowOrphanDelete | default false) (not $writeOn) -}}
+    {{- fail "\n\ndevops-mcp-server.rbac.allowOrphanDelete is true, but writeTools.enabled is false.\n\nThe ClusterRole would grant cluster-wide delete on ConfigMaps, Services, ServiceAccounts, Deployments and StatefulSets, and no tool in this release could use it — a standing delete credential with no consumer, on objects that have no controller to recreate them.\n\nSet writeTools.enabled: true (with allowedNamespaces) if orphan cleanup is wanted, or rbac.allowOrphanDelete: false.\n" -}}
+  {{- end -}}
   {{/* An allowlist, not a denylist: empty blocks everything. The tools would register and
        refuse every call — the same loop as the RBAC case, one layer in. */}}
   {{- if and $writeOn (not (hasKey $mcpEnvAll "ALLOWED_REMEDIATION_NAMESPACES")) (not ($write.allowedNamespaces | default list)) -}}

@@ -274,6 +274,7 @@ ran on whatever the image's own `ENV TRANSPORT=http` said.
 | `devops-llm-worker.llm.apiFormat` | `openai` | `openai` \| `anthropic` \| `agent-builder` — the wire format. |
 | `devops-llm-worker.gitops.repo` | `""` | The only repository the PR handler may touch. |
 | `devops-mcp-server.rbac.allowWrite` | `false` | Cluster-wide write. See below. |
+| `devops-mcp-server.rbac.allowOrphanDelete` | `false` | Cluster-wide `delete` on ConfigMaps/Services/ServiceAccounts/Deployments/StatefulSets, for `k8s_delete_orphan`. See below. |
 | `devops-mcp-server.rbac.allowFluxReconcile` | `false` | Lets `flux_reconcile` annotate HelmReleases. |
 | `devops-mcp-server.rbac.readAllCustomResources` | `true` | `get`/`list` on all API groups, for the CRD cross-check in `k8s_find_unused_resources`. See below. |
 | `<service>.env.NODE_ENV` | `prod` | `prod`, not `production` — all three compare the string exactly. |
@@ -356,6 +357,32 @@ into its Pod. A credential in a Pod that has no use for it is a credential in on
 place than necessary.
 
 ### Remediation is bounded twice
+
+### `allowOrphanDelete`
+
+A separate switch from `allowWrite`, and the separation is the point.
+
+`allowWrite` grants `patch`/`update` plus `delete` on **pods**, and every one of those is
+recoverable: a patched Deployment can be patched back, a deleted pod is recreated by its
+controller. `allowOrphanDelete` grants `delete` on ConfigMaps, Services, ServiceAccounts,
+Deployments and StatefulSets — objects with no controller behind them, so nothing recreates what
+it removes. An operator enabling remediation for rolling restarts must not acquire that by
+implication, which is why turning on `allowWrite` does not turn this on.
+
+The kind list is exactly the set a stored manifest restores. `secrets` and
+`persistentvolumeclaims` are absent, and `k8s_delete_orphan` refuses them regardless of RBAC: a
+Secret's backup **is** its credentials, so storing one to make the delete reversible copies them
+somewhere they do not belong; and a PVC's manifest is not its data, so re-applying it returns an
+empty volume.
+
+The tool captures the object's manifest immediately before deleting it, stores it on the
+`remediations` row that authorised the action, and posts it into the Slack thread. That copy is
+the undo.
+
+The chart fails the render when `allowOrphanDelete` is true and `writeTools.enabled` is false —
+a standing delete credential with no consumer. The opposite direction is allowed on purpose:
+write tools without this grant means `k8s_delete_orphan` registers and refuses on RBAC, which is
+the correct outcome for someone who wants restarts but not deletions.
 
 ### `readAllCustomResources`
 
