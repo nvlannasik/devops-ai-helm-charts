@@ -54,6 +54,8 @@ jobs:
           grep -q "GITHUB_APP_PRIVATE_KEY_FILE" "$out"
           grep -q "defaultMode: 0400" "$out"
           ! grep -q "name: GITHUB_TOKEN" "$out"
+          # The mention allowlist reaches the agent as its comma-joined env var.
+          grep -A1 "name: SLACK_ALLOWED_USERS" "$out" | grep -q '"U00000000003,U00000000004"'
           # irsa: the annotation on both AWS workloads, and none of the other modes' inputs.
           test "$(grep -c 'eks.amazonaws.com/role-arn' "$out")" -eq 2
           ! grep -qE 'CERT_PATH|AWS_TRUST_ANCHOR_ARN|AWS_ACCESS_KEY_ID' "$out"
@@ -96,6 +98,7 @@ jobs:
             --set 'devops-ai-agent.llm.backends[1].existingSecret=llm-keys' \
             --set 'devops-ai-agent.llm.backends[2].name=priv' \
             --set 'devops-ai-agent.llm.backends[2].kind=private-llm' \
+            --set 'devops-ai-agent.llm.backends[2].maxTokens=16384' \
             --set 'devops-ai-agent.llm.routes.heavy[0]=heavy' \
             --set 'devops-ai-agent.llm.routes.light[0]=light' \
             -s charts/devops-ai-agent/templates/deployment.yaml > "${TMPDIR:-/tmp}/backends.yaml"

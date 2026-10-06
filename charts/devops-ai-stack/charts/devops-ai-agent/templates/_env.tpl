@@ -53,6 +53,7 @@ Service is rendered from. */}}
       "SLACK_ALERT_CHANNEL" $slack.alertChannel
       "SLACK_ONCALL_USERS" (join "," ($slack.oncallUsers | default list))
       "SLACK_APPROVER_USERS" (join "," ($slack.approverUsers | default list))
+      "SLACK_ALLOWED_USERS" (join "," ($slack.allowedUsers | default list))
       "SLACK_LEARN_REACTION" $slack.learnReaction
       "LLM_PROVIDER" $llm.provider
       "MAX_TOKENS" $llm.maxTokens

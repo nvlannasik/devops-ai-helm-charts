@@ -103,6 +103,8 @@ devops-ai-agent:
         # kind private-llm takes the SQS path — the render fails if the worker is disabled,
         # and it carries no key here: llm-worker holds that one.
         kind: private-llm
+        # llm-worker's llm.maxTokens, stated here: the agent reserves this much for the reply.
+        maxTokens: 16384
     routes:
       heavy: [private-llm, chatgpt, haiku]
       light: [deepseek]

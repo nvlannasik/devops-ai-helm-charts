@@ -99,6 +99,9 @@ devops-ai-agent:
     # Distinct from oncallUsers here: whoever is paged is not automatically who may approve
     # a write to the cluster. Left empty it falls back to oncallUsers.
     approverUsers: ["U00000000002"]
+    # Who may mention the agent at all. Being in the channel is not enough; on-call and
+    # approvers above are admitted without being repeated here.
+    allowedUsers: ["U00000000003", "U00000000004"]
     existingSecret: devops-agent-secret
 
   alertWebhook:
@@ -113,6 +116,8 @@ devops-ai-agent:
         # The SQS path: no key here, because llm-worker holds it. The render fails if the
         # worker is disabled — nothing would ever answer these messages.
         kind: private-llm
+        # llm-worker's llm.maxTokens, stated here: the agent reserves this much for the reply.
+        maxTokens: 16384
         # Lets the router skip this backend when a prompt will not fit its window, rather
         # than sending one that comes back truncated.
         contextTokens: 32768

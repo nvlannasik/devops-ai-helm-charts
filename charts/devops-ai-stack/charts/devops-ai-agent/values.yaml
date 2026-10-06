@@ -99,6 +99,9 @@ slack:
   # Who may approve or reject a remediation. Empty falls back to oncallUsers; both empty
   # means any user may decide (the agent warns at boot — it is still a human gate).
   approverUsers: []
+  # Who may mention the agent or ✅-learn in a thread. oncallUsers and approverUsers are
+  # always admitted too. Empty means anyone in a channel the bot is in (warned at boot).
+  allowedUsers: []
   # Reacting with this emoji inside an investigated thread triggers learn-from-thread.
   learnReaction: "white_check_mark"
 
