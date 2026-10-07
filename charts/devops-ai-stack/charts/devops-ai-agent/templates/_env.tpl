@@ -99,6 +99,10 @@ map; a list has no gaps to introduce. Order here IS the index order. */}}
   {{- $_ := set $plain (printf "LLM_BACKEND_%d_BASE_URL" $n) $b.baseUrl -}}
   {{- $_ := set $plain (printf "LLM_BACKEND_%d_CONTEXT_TOKENS" $n) $b.contextTokens -}}
   {{- $_ := set $plain (printf "LLM_BACKEND_%d_MAX_TOKENS" $n) $b.maxTokens -}}
+  {{/* USD per million tokens, for the dashboard's cost figures. Unset = tokens shown, no cost. */}}
+  {{- $_ := set $plain (printf "LLM_BACKEND_%d_PRICE_INPUT" $n) $b.priceInput -}}
+  {{- $_ := set $plain (printf "LLM_BACKEND_%d_PRICE_OUTPUT" $n) $b.priceOutput -}}
+  {{- $_ := set $plain (printf "LLM_BACKEND_%d_PRICE_CACHE_READ" $n) $b.priceCacheRead -}}
   {{/* private-llm only. Unset means the global SQS_REQUEST_QUEUE_NAME, which is what a
        lone private-llm uses; the agent REQUIRES it once a second one exists. */}}
   {{- $_ := set $plain (printf "LLM_BACKEND_%d_REQUEST_QUEUE" $n) $b.requestQueue -}}

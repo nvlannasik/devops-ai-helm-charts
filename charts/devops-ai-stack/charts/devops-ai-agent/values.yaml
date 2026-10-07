@@ -134,6 +134,9 @@ alertWebhook:
 #   model          claude and openai-compatible.
 #   baseUrl        openai-compatible only.
 #   contextTokens  optional; lets the router skip a backend whose window is too small.
+#   priceInput / priceOutput / priceCacheRead
+#                  optional, USD per million tokens — the dashboard's cost per investigation.
+#                  Both input and output, or the backend shows tokens only (never a $0).
 #   maxTokens      optional output ceiling for THIS backend. The budget reserves the LARGEST
 #                  across all of them, so the answer fits whichever one replies. For claude and
 #                  openai-compatible it is sent on the wire — one global value cannot serve a
