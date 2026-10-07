@@ -44,11 +44,12 @@ So the chart's real payload is `templates/_validate.tpl`. It refuses to render w
   `gitops.enabled: false` — the agent holds no GitHub credentials by design, so every
   proposal it makes would be dropped by the one side that could act on it
 - GitOps remediation is on without a queue for it
-- `LLM_API_FORMAT` is neither `openai` nor `anthropic` (it names a wire format, not a
-  vendor: a self-hosted model behind an OpenAI-compatible gateway is `openai`)
+- `LLM_API_FORMAT` is not `openai`, `anthropic` or `agent-builder` (it names a wire format,
+  not a vendor: a self-hosted model behind an OpenAI-compatible gateway is `openai`)
 - the worker has no LLM endpoint or no model — both are read with a non-null assertion, so
   unset means a healthy Pod that crashes on its first message
-- an OpenAI-only sampling parameter is set under the `anthropic` wire format, or the
+- an OpenAI-only sampling parameter is set under the `anthropic` wire format, a parameter
+  the Langflow envelope cannot carry is set under `agent-builder`, or the
   GitOps bridge is half-configured: credentials with no repo, a repo with no credentials,
   a GitHub App missing its installation ID or its private key, or a GitHub Enterprise URL
   with no `/api/v3` on it
@@ -103,15 +104,15 @@ to GHCR as an OCI artifact when a `v*` tag lands:
 
 ```bash
 # bump version: in charts/devops-ai-stack/Chart.yaml first — the workflow refuses a tag
-# that disagrees with it, because otherwise `v0.2.0` would republish 0.1.0 silently.
-git tag v0.2.0 && git push origin v0.2.0
+# that disagrees with it, because otherwise `v0.7.0` would republish 0.6.0 silently.
+git tag v0.7.0 && git push origin v0.7.0
 ```
 
-The result is `ghcr.io/nvlannasik/charts/devops-ai-stack:0.2.0`, installable directly:
+The result is `ghcr.io/nvlannasik/charts/devops-ai-stack:<version>`, installable directly:
 
 ```bash
 helm install devops-ai oci://ghcr.io/nvlannasik/charts/devops-ai-stack \
-  --version 0.2.0 -n devops-tools -f my-values.yaml
+  --version 0.6.0 -n devops-tools -f my-values.yaml
 ```
 
 The workflow authenticates with the job's own `GITHUB_TOKEN`, so no secret needs
@@ -146,20 +147,29 @@ devops-ai-agent:
     backends:
       - name: private-llm
         kind: private-llm           # takes the SQS path; needs devops-llm-worker
-      - name: sonnet
-        kind: claude                # claude | openai-compatible | private-llm
-        model: claude-sonnet-4-5
+        priceInput: 0.05            # optional, USD per 1M tokens — dashboard cost figures
+        priceOutput: 0.4
+        priceCacheRead: 0.005
+      - name: chatgpt
+        kind: openai-compatible     # claude | openai-compatible | private-llm
+        model: gpt-5-nano
+        baseUrl: https://api.openai.com/v1
         existingSecret: devops-agent-secret
-        apiKeyKey: CLAUDE_KEY       # defaults to LLM_BACKEND_<N>_KEY
-      - name: haiku
-        kind: claude
-        model: claude-haiku-4-5
+        apiKeyKey: OPENAI_KEY       # defaults to LLM_BACKEND_<N>_KEY
+        maxTokens: 16384
+      - name: deepseek
+        kind: openai-compatible
+        model: deepseek-chat
+        baseUrl: https://api.deepseek.com/v1
         existingSecret: devops-agent-secret
-        apiKeyKey: CLAUDE_KEY
+        apiKeyKey: DEEPSEEK_KEY
     routes:
-      heavy: [private-llm, sonnet]  # failover chain for investigations
-      light: [haiku]                # cheap calls; never falls back onto heavy
+      heavy: [private-llm, chatgpt]  # failover chain for investigations
+      light: [deepseek]              # cheap calls; never falls back onto heavy
 ```
+
+A backend without `priceInput`/`priceOutput` still has its tokens counted; the dashboard
+shows it as `not priced`, never as `$0`.
 
 The two lanes must be disjoint, and the chart enforces that. Failover is up-only, so a
 backend named in both is an ordering that means nothing — and the reason to separate them
@@ -168,6 +178,19 @@ is that the heavy lane's fallback should be no weaker than what it replaces.
 The indices must be contiguous from 1 — the registry stops reading at the first gap — and
 a list has no gaps to introduce, because order here IS the index order. Writing those
 twelve variables by hand is what made a deleted middle entry a silent router failure.
+
+`slack` takes user IDs as lists and renders the comma-separated strings the agent parses.
+`allowedUsers` is who may mention the agent at all — on-call and approvers are always
+admitted too, and an empty list means anyone in the channel (the agent warns at boot):
+
+```yaml
+devops-ai-agent:
+  slack:
+    alertChannel: C0123456789
+    oncallUsers: [U01AAAAAAAA]
+    approverUsers: [U01AAAAAAAA]
+    allowedUsers: [U01BBBBBBBB, U01CCCCCCCC]
+```
 
 `env:` and `secretEnv:` are still there as escape hatches for anything the objects do not
 model, and they win over the derived value of the same name.
