@@ -34,7 +34,7 @@ rules:
     verbs: ["get"]
 
   - apiGroups: ["apps"]
-    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets", "controllerrevisions"]
     verbs: ["get", "list"]
 
   - apiGroups: ["batch"]
