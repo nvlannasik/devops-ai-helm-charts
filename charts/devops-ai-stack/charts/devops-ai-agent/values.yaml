@@ -283,6 +283,11 @@ dashboard:
   cookieSecure: true
   existingSecret: "devops-agent-secret"
   passwordKey: "DASHBOARD_PASSWORD"
+  # Optional, not secret. Used only to build the link `@agent postmortem` posts to Slack
+  # (docs/superpowers/specs/2026-10-14-postmortem-draft-design.md §6) — independent of
+  # `enabled` above, since the dashboard a link points at doesn't have to be this release's.
+  # Unset renders the bare `/incidents/:id/postmortem` path instead of a full URL.
+  publicUrl: ""
 
 # ---------------------------------------------------------------------------
 # Escape hatches. Anything set in `env` WINS over the blocks above: the chart skips a

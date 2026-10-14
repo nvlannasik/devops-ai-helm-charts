@@ -136,6 +136,9 @@ variable without giving up the rest.
 `investigation`, `gitops`, `database`, `redis` and `dashboard`. Each renders the env vars
 the agent actually reads, so related values that must agree cannot be set separately — the
 dashboard's container port, Service port and `DASHBOARD_PORT` are one value, not three.
+`dashboard.publicUrl` is independent of `dashboard.enabled`: it only builds the link
+`@agent postmortem` posts to Slack (`DASHBOARD_PUBLIC_URL`), rendered when set and omitted
+otherwise — the dashboard a link points at doesn't have to be this release's own.
 
 `llm.backends` is the largest of these. It is a list, rendered into the indexed
 `LLM_BACKEND_<N>_*` variables the agent's registry parses:
