@@ -112,7 +112,7 @@ The result is `ghcr.io/nvlannasik/charts/devops-ai-stack:<version>`, installable
 
 ```bash
 helm install devops-ai oci://ghcr.io/nvlannasik/charts/devops-ai-stack \
-  --version 0.6.0 -n devops-tools -f my-values.yaml
+  --version 0.7.0 -n devops-tools -f my-values.yaml
 ```
 
 The workflow authenticates with the job's own `GITHUB_TOKEN`, so no secret needs
