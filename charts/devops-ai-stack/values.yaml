@@ -13,6 +13,16 @@
 # so what would otherwise be duplication-you-hope-about is duplication-that-is-checked.
 
 global:
+  # OpenTelemetry traces from all three services (spec devops-ai-agent/docs/superpowers/specs/
+  # 2026-10-27-otel-tracing-design.md). Off renders nothing and each image's preload stays inert.
+  tracing:
+    enabled: false
+    # OTLP/HTTP base URL, e.g. http://jaeger.monitoring.svc.cluster.local:4318 — the services
+    # append /v1/traces. Required when enabled (the render fails without it).
+    endpoint: ""
+    # Optional OTEL_TRACES_SAMPLER; empty keeps the SDK default, parentbased_always_on.
+    sampler: ""
+
   sqs:
     # The agent writes LLM requests here; llm-worker reads them.
     requestQueue: "llm-request.fifo"

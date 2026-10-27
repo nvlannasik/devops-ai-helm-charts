@@ -288,6 +288,9 @@ dashboard:
   # `enabled` above, since the dashboard a link points at doesn't have to be this release's.
   # Unset renders the bare `/incidents/:id/postmortem` path instead of a full URL.
   publicUrl: ""
+  # Optional, not secret. The Jaeger UI an incident's "Open in Jaeger" button links into
+  # (<url>/trace/<id>); unset shows no button. Only meaningful with global.tracing.enabled.
+  tracingUiUrl: ""
 
 # ---------------------------------------------------------------------------
 # Escape hatches. Anything set in `env` WINS over the blocks above: the chart skips a

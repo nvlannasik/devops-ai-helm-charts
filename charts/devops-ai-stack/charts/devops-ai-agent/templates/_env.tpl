@@ -66,6 +66,7 @@ Service is rendered from. */}}
       "MENTION_TOOL_ROUNDS" $inv.mentionToolRounds
       "DASHBOARD_ENABLED" ($dash.enabled | default false)
       "DASHBOARD_PUBLIC_URL" $dash.publicUrl
+      "TRACING_UI_URL" $dash.tracingUiUrl
 -}}
 
 {{/* Secret-backed name -> {secret, key, optional}. */}}

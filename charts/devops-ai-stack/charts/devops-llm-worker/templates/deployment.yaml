@@ -86,6 +86,7 @@ spec:
           env:
             {{- include "devops-ai.sqsEnv" . | nindent 12 }}
             {{- include "devops-ai.awsEnv" . | nindent 12 }}
+            {{- include "devops-ai.tracingEnv" . | nindent 12 }}
             {{- include "devops-llm-worker.derivedEnv" . | nindent 12 }}
             {{- include "devops-ai.env" . | nindent 12 }}
           {{- $certMount := include "devops-ai.awsCertVolumeMount" . }}

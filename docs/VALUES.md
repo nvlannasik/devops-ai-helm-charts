@@ -12,6 +12,9 @@ variable without giving up the rest. What the chart refuses to render: [VALIDATI
 | `global.sqs.requestQueue` | `llm-request.fifo` | Agent writes, worker reads. |
 | `global.sqs.responseQueue` | `llm-response.fifo` | Shared, routed by `requestId`. |
 | `global.sqs.gitopsRequestQueue` | `gitops-request.fifo` | The PR-remediation contract. |
+| `global.tracing.enabled` | `false` | OpenTelemetry export from all three services. |
+| `global.tracing.endpoint` | `""` | OTLP/HTTP base URL; required when enabled. |
+| `global.tracing.sampler` | `""` | `OTEL_TRACES_SAMPLER`; empty keeps `parentbased_always_on`. |
 | `global.aws.region` | `ap-southeast-1` | Where the queues and the credentials are. Was `global.sqs.region`. |
 | `global.aws.authMode` | `iam-anywhere` | `iam-anywhere` \| `irsa` \| `env` \| `instance-profile`. Rendered as `AWS_AUTH_MODE`. |
 | `global.aws.rolesAnywhere.configSecret.name` | `aws-rolesanywhere-config` | `iam-anywhere` only: Secret holding the trust anchor, profile and role ARNs. |
@@ -44,7 +47,14 @@ agree cannot be set separately — the dashboard's container port, Service port 
 `DASHBOARD_PORT` are one value, not three. `dashboard.publicUrl` is independent of
 `dashboard.enabled`: it only builds the link `@agent postmortem` posts to Slack
 (`DASHBOARD_PUBLIC_URL`), rendered when set and omitted otherwise — the dashboard a link points
-at doesn't have to be this release's own.
+at doesn't have to be this release's own. `dashboard.tracingUiUrl` (`TRACING_UI_URL`) is the
+Jaeger UI an incident's "Open in Jaeger" button links into; unset shows no button.
+
+**Tracing** (`global.tracing`, 0.8.0): each image starts OpenTelemetry in a `node --import`
+preload that is inert without `OTEL_EXPORTER_OTLP_ENDPOINT`, so `enabled: false` renders nothing
+and changes nothing. Enabled, `endpoint` reaches all three Deployments (`OTEL_TRACES_SAMPLER` too
+when `sampler` is set); the service names are baked into the images. A service's own `env` wins —
+an llm-worker that cannot reach the collector sets its own endpoint, or an empty one.
 
 `llm.backends` is the largest of these. It is a list, rendered into the indexed
 `LLM_BACKEND_<N>_*` variables the agent's registry parses:

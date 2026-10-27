@@ -63,6 +63,39 @@ jobs:
           grep -q 'value: "devops-ai-postgresql"' "$out"
           grep -q 'value: "devops-ai-redis-master"' "$out"
 
+      # OpenTelemetry (spec devops-ai-agent/docs/superpowers/specs/2026-10-27-otel-tracing-design.md
+      # §8): one global switch reaches all three services; off renders nothing; on without an
+      # endpoint is a render failure, not a fleet that silently exports nowhere; a service's own
+      # env wins, so a worker in a private network can point elsewhere or nowhere.
+      - name: render with tracing
+        run: |
+          set -eu
+          base="--set devops-ai-agent.mcp.authToken=ci --set devops-mcp-server.mcp.authToken=ci --set devops-llm-worker.enabled=true --set devops-llm-worker.llm.baseUrl=http://llm/v1 --set devops-llm-worker.llm.model=m"
+          off="${TMPDIR:-/tmp}/tracing-off.yaml"
+          on="${TMPDIR:-/tmp}/tracing-on.yaml"
+          helm template devops-ai charts/devops-ai-stack $base > "$off"
+          ! grep -q "OTEL_EXPORTER_OTLP_ENDPOINT" "$off"
+          ! grep -q "TRACING_UI_URL" "$off"
+          helm template devops-ai charts/devops-ai-stack $base \
+            --set global.tracing.enabled=true \
+            --set global.tracing.endpoint=http://jaeger:4318 \
+            --set global.tracing.sampler=parentbased_traceidratio \
+            --set devops-ai-agent.dashboard.tracingUiUrl=https://jaeger.example > "$on"
+          test "$(grep -A1 'name: OTEL_EXPORTER_OTLP_ENDPOINT' "$on" | grep -c 'http://jaeger:4318')" -eq 3
+          test "$(grep -A1 'name: OTEL_TRACES_SAMPLER' "$on" | grep -c 'parentbased_traceidratio')" -eq 3
+          grep -A1 'name: TRACING_UI_URL' "$on" | grep -q 'https://jaeger.example'
+          # enabled without an endpoint fails the render and names the value to set
+          if helm template devops-ai charts/devops-ai-stack $base --set global.tracing.enabled=true > /dev/null 2> "${TMPDIR:-/tmp}/tracing-err.txt"; then
+            echo "tracing enabled without an endpoint rendered"; exit 1
+          fi
+          grep -q "global.tracing.endpoint" "${TMPDIR:-/tmp}/tracing-err.txt"
+          # a service's own env wins over the global endpoint
+          helm template devops-ai charts/devops-ai-stack $base \
+            --set global.tracing.enabled=true --set global.tracing.endpoint=http://jaeger:4318 \
+            --set devops-llm-worker.env.OTEL_EXPORTER_OTLP_ENDPOINT=http://elsewhere:4318 > "$on"
+          test "$(grep -c 'name: OTEL_EXPORTER_OTLP_ENDPOINT' "$on")" -eq 3
+          grep -A1 'name: OTEL_EXPORTER_OTLP_ENDPOINT' "$on" | grep -q 'http://elsewhere:4318'
+
       - name: render with everything enabled
         run: |
           helm template devops-ai charts/devops-ai-stack \

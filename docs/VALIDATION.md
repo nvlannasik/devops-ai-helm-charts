@@ -57,8 +57,9 @@ bounds under [remediation is bounded twice](VALUES.md#remediation-is-bounded-twi
 
 ## Shared values are written once
 
-The other half is that shared values are written once. `global.sqs` and `global.aws`
-render into both sides of their respective contracts, and `MCP_HTTP_URL` is derived from
+The other half is that shared values are written once. `global.sqs`, `global.aws` and
+`global.tracing` render into both sides of their respective contracts (tracing into all three,
+and `enabled` without an `endpoint` fails the render), and `MCP_HTTP_URL` is derived from
 the MCP server's own Service name and port rather than written a second time.
 
 MCP is the deliberate exception: it is configured under `devops-ai-agent.mcp` and

@@ -234,3 +234,27 @@ own devops-ai-agent.derivedEnv, beside the port, name and password that go with 
 one block per concern rather than a host here and everything else there. The agent is the
 only consumer either helper ever had, so nothing shared is left to define.
 */}}
+
+{{/*
+OpenTelemetry export, from `global.tracing` (spec: devops-ai-agent/docs/superpowers/specs/
+2026-10-27-otel-tracing-design.md §8). Each service's image starts the SDK in a `node --import`
+preload that does nothing at all without OTEL_EXPORTER_OTLP_ENDPOINT — so rendering nothing is
+"tracing off". The service name is baked into each image (OTEL_SERVICE_NAME), not set here.
+
+Same precedence as the helpers above: a service's own env wins, which is how an llm-worker in a
+private network points at another collector, or at nothing.
+*/}}
+{{- define "devops-ai.tracingEnv" -}}
+{{- $t := (.Values.global | default dict).tracing | default dict -}}
+{{- $ownEnv := .Values.env | default dict -}}
+{{- if $t.enabled }}
+{{- if and $t.endpoint (not (hasKey $ownEnv "OTEL_EXPORTER_OTLP_ENDPOINT")) }}
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: {{ $t.endpoint | quote }}
+{{- end }}
+{{- if and $t.sampler (not (hasKey $ownEnv "OTEL_TRACES_SAMPLER")) }}
+- name: OTEL_TRACES_SAMPLER
+  value: {{ $t.sampler | quote }}
+{{- end }}
+{{- end }}
+{{- end -}}

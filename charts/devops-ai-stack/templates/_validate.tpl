@@ -18,6 +18,13 @@ Rules for adding a check here:
 */}}
 {{- define "devops-ai.validate" -}}
 {{- $g := .Values.global | default dict -}}
+
+{{- /* OpenTelemetry: switched on without an endpoint would render three services that export
+     nowhere — every span dropped, nothing failing. Refuse it here, where it costs a re-render. */ -}}
+{{- $tr := $g.tracing | default dict -}}
+{{- if and $tr.enabled (not $tr.endpoint) -}}
+  {{- fail "\n\nglobal.tracing.enabled is true but global.tracing.endpoint is empty.\n\nSet the OTLP/HTTP base URL the three services export to, e.g.\n\n  global:\n    tracing:\n      enabled: true\n      endpoint: http://jaeger.monitoring.svc.cluster.local:4318\n\nThe services append /v1/traces themselves. A service that must not export (an llm-worker that cannot reach the collector) can override it in its own env.\n" -}}
+{{- end -}}
 {{- $agent := index .Values "devops-ai-agent" | default dict -}}
 {{- $mcp := index .Values "devops-mcp-server" | default dict -}}
 {{- $worker := index .Values "devops-llm-worker" | default dict -}}

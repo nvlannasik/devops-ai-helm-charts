@@ -49,6 +49,7 @@ spec:
             {{- include "devops-ai.mcpAuthEnv" . | nindent 12 }}
             {{- include "devops-ai.sqsEnv" . | nindent 12 }}
             {{- include "devops-ai.awsEnv" . | nindent 12 }}
+            {{- include "devops-ai.tracingEnv" . | nindent 12 }}
             {{- include "devops-ai-agent.derivedEnv" . | nindent 12 }}
             {{- include "devops-ai.env" . | nindent 12 }}
           {{- if .Values.livenessProbe.enabled }}
