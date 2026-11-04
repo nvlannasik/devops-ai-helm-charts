@@ -133,6 +133,17 @@ rules:
     verbs: ["patch"]
   {{- end }}
 
+  {{- if .Values.rbac.allowNodeOps }}
+  # ---- k8s_cordon / k8s_uncordon / k8s_drain ----
+  # Cordon flips spec.unschedulable; drain evicts (never deletes) so PDBs still decide.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["patch"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+  {{- end }}
+
   {{- with .Values.rbac.extraRules }}
   {{- toYaml . | nindent 2 }}
   {{- end }}

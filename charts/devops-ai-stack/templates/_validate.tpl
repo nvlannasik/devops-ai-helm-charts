@@ -149,6 +149,9 @@ nothing in the release can use.
   {{- if and ($rbac.allowOrphanDelete | default false) (not $writeOn) -}}
     {{- fail "\n\ndevops-mcp-server.rbac.allowOrphanDelete is true, but writeTools.enabled is false.\n\nThe ClusterRole would grant cluster-wide delete on ConfigMaps, Services, ServiceAccounts, Deployments and StatefulSets, and no tool in this release could use it — a standing delete credential with no consumer, on objects that have no controller to recreate them.\n\nSet writeTools.enabled: true (with allowedNamespaces) if orphan cleanup is wanted, or rbac.allowOrphanDelete: false.\n" -}}
   {{- end -}}
+  {{- if and ($rbac.allowNodeOps | default false) (not $writeOn) -}}
+    {{- fail "\n\ndevops-mcp-server.rbac.allowNodeOps is true, but writeTools.enabled is false.\n\nThe ClusterRole would grant patch on nodes and create on pods/eviction cluster-wide, and no tool in this release could use it.\n\nSet writeTools.enabled: true if node operations are wanted, or rbac.allowNodeOps: false.\n" -}}
+  {{- end -}}
   {{/* An allowlist, not a denylist: empty blocks everything. The tools would register and
        refuse every call — the same loop as the RBAC case, one layer in. */}}
   {{- if and $writeOn (not (hasKey $mcpEnvAll "ALLOWED_REMEDIATION_NAMESPACES")) (not ($write.allowedNamespaces | default list)) -}}

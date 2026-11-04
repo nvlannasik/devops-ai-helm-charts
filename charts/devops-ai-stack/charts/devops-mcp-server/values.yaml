@@ -230,6 +230,11 @@ rbac:
   # those go through a pull request.
   allowFluxReconcile: false
 
+  # Lets k8s_cordon / k8s_uncordon / k8s_drain act on nodes: patch on nodes (spec.unschedulable) and
+  # create on pods/eviction (drain evicts through the Eviction API, so PodDisruptionBudgets apply).
+  # Cluster-wide by nature — a node has no namespace.
+  allowNodeOps: false
+
   # Backs the CRD cross-check in k8s_find_unused_resources: before that tool reports a
   # ConfigMap or Secret as unused it looks for the name in EVERY custom resource in the
   # cluster, because an operator that references an object by name leaves no
