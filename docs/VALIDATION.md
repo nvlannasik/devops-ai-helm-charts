@@ -17,7 +17,8 @@ So the chart's real payload is `templates/_validate.tpl`. It refuses to render w
 - MCP transport is `http` on one side and something else on the other
 - the MCP server registers its write tools without the RBAC to execute them, or holds
   cluster-wide write RBAC with no tool behind it, or enables them with an empty namespace
-  allowlist — all three are a tool the agent will call and be refused, in a loop
+  allowlist — all three are a tool the agent will call and be refused, in a loop (the same
+  holds for `rbac.allowOrphanDelete` and `rbac.allowNodeOps` without `writeTools.enabled`)
 - the MCP server names a tracing backend it does not implement, or `kubeconfig` auth with
   no kubeconfig, or in-cluster auth with its ServiceAccount token unmounted
 - the SQS request, response, or GitOps queue names differ between agent and worker

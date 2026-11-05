@@ -64,15 +64,15 @@ to GHCR as an OCI artifact when a `v*` tag lands:
 
 ```bash
 # bump version: in charts/devops-ai-stack/Chart.yaml first — the workflow refuses a tag
-# that disagrees with it, because otherwise `v0.7.0` would republish 0.6.0 silently.
-git tag v0.7.0 && git push origin v0.7.0
+# that disagrees with it, because otherwise `v0.8.2` would republish 0.8.1 silently.
+git tag v0.8.2 && git push origin v0.8.2
 ```
 
 The result is `ghcr.io/nvlannasik/charts/devops-ai-stack:<version>`, installable directly:
 
 ```bash
 helm install devops-ai oci://ghcr.io/nvlannasik/charts/devops-ai-stack \
-  --version 0.8.0 -n devops-tools -f my-values.yaml
+  --version 0.8.1 -n devops-tools -f my-values.yaml
 ```
 
 The workflow authenticates with the job's own `GITHUB_TOKEN`, so no secret needs

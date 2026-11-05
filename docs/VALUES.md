@@ -34,6 +34,7 @@ variable without giving up the rest. What the chart refuses to render: [VALIDATI
 | `devops-llm-worker.gitops.repo` | `""` | The only repository the PR handler may touch. |
 | `devops-mcp-server.rbac.allowWrite` | `false` | Cluster-wide write. See [remediation is bounded twice](#remediation-is-bounded-twice). |
 | `devops-mcp-server.rbac.allowOrphanDelete` | `false` | Cluster-wide `delete` on ConfigMaps/Services/ServiceAccounts/Deployments/StatefulSets, for `k8s_delete_orphan`. See [`allowOrphanDelete`](#alloworphandelete). |
+| `devops-mcp-server.rbac.allowNodeOps` | `false` | `patch` on nodes and `create` on `pods/eviction`, for `k8s_cordon` / `k8s_uncordon` / `k8s_drain` (0.8.1). Cluster-scoped — the namespace allowlist does not bound it; the tools refuse a control-plane node and the last schedulable one. Needs `writeTools.enabled`. |
 | `devops-mcp-server.rbac.allowFluxReconcile` | `false` | Lets `flux_reconcile` annotate HelmReleases. |
 | `devops-mcp-server.rbac.readAllCustomResources` | `true` | `get`/`list` on all API groups, for the CRD cross-check in `k8s_find_unused_resources`. See [`readAllCustomResources`](#readallcustomresources). |
 | `<service>.env.NODE_ENV` | `prod` | `prod`, not `production` — all three compare the string exactly. |
