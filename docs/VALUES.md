@@ -91,9 +91,14 @@ devops-ai-agent:
 A backend without `priceInput`/`priceOutput` still has its tokens counted; the dashboard
 shows it as `not priced`, never as `$0`.
 
-The two lanes must be disjoint, and the chart enforces that. Failover is up-only, so a
-backend named in both is an ordering that means nothing — and the reason to separate them
-is that the heavy lane's fallback should be no weaker than what it replaces.
+Light escalates into heavy when a light backend fails. Heavy goes on to the light lane for
+ONE reason only (agent, chart 0.8.2): every heavy backend is out of credit or refuses its
+key — a heavy backend that times out or answers badly never sends the call to a weaker
+model, because a weak model fails by answering confidently. The RCA card's footer says when
+this happened (`light (heavy out of credit)`). `LLM_ROUTER_DESCEND=never` (through `env:`)
+restores the strict up-only rule. A backend may be named in both lanes; the router dedupes the
+chain, so it is still tried at most once per call. Listing one twice in the same lane fails
+the render.
 
 The indices must be contiguous from 1 — the registry stops reading at the first gap — and
 a list has no gaps to introduce, because order here IS the index order. Writing those

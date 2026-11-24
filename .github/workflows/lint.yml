@@ -252,10 +252,10 @@ jobs:
             --set 'devops-ai-agent.llm.backends[0].kind=openai-compatible'
           expect_fail "a route naming a backend that was never declared" $ROUTER \
             --set 'devops-ai-agent.llm.routes.heavy[0]=nope'
-          # Failover is up-only, so the two lanes have to be disjoint: a backend in both
-          # is an ordering that means nothing, not a redundancy.
-          expect_fail "one backend in both the heavy and light lanes" $ROUTER \
-            --set 'devops-ai-agent.llm.routes.light[0]=b1'
+          # A backend may serve both lanes since agent 2026-11-24 (the router dedupes the chain);
+          # listing it twice in ONE lane is still refused.
+          expect_fail "one backend listed twice in the heavy lane" $ROUTER \
+            --set 'devops-ai-agent.llm.routes.heavy[1]=b1'
           expect_fail "router with no backends to route between" \
             --set devops-ai-agent.llm.provider=router
           expect_fail "redis turned on with no host to reach it at" \

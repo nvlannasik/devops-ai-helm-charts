@@ -389,11 +389,16 @@ real, or the key valid, is not.
       {{- end -}}
     {{- end -}}
   {{- end -}}
-  {{/* A backend in both lanes makes failover circular: heavy falls back onto a light
-       backend that can itself fall back into heavy. The agent rejects this at boot. */}}
-  {{- range $n := ($routes.heavy | default list) -}}
-    {{- if has $n ($routes.light | default list) -}}
-      {{- fail (printf "\n\nBackend %q appears in both llm.routes.heavy and llm.routes.light.\n\nFailover is up-only — light never falls back onto heavy — and a backend in both lanes makes that ordering meaningless.\n" $n) -}}
+  {{/* A backend may serve both lanes (agent 2026-11-24): the router dedupes the chain, so it is
+       still tried once per call, and a heavy chain whose every backend is out of credit goes on
+       to the light lane. A duplicate inside ONE lane is still a mistake. */}}
+  {{- range $lane := list "heavy" "light" -}}
+    {{- $seen := list -}}
+    {{- range $n := (index $routes $lane) | default list -}}
+      {{- if has $n $seen -}}
+        {{- fail (printf "\n\nBackend %q is listed twice in llm.routes.%s.\n\nEach backend is tried at most once per call; list it once.\n" $n $lane) -}}
+      {{- end -}}
+      {{- $seen = append $seen $n -}}
     {{- end -}}
   {{- end -}}
 

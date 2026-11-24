@@ -42,9 +42,8 @@ So the chart's real payload is `templates/_validate.tpl`. It refuses to render w
   database itself
 - the agent's database name and `postgresql.auth.database` disagree
 - an LLM backend names a kind the agent's registry does not know, two backends answer to
-  the same name, a route names a backend that was never declared, or one backend appears
-  in both routes — failover is up-only, so a backend in both lanes makes the ordering
-  meaningless
+  the same name, a route names a backend that was never declared, or one backend is listed
+  twice in the same route (a backend may serve both routes since 0.8.2)
 - `redis.enabled` is on with no host to reach it at
 
 Each failure names the two values, shows what they are, and says which to change. They

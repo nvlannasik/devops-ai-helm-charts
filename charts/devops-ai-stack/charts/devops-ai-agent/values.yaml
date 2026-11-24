@@ -190,8 +190,10 @@ llm:
     #   requestQueue: llm-request-deepseek.fifo
 
   # Router policy. Names must match `backends[].name`; the agent fails at boot otherwise.
-  # heavy is the failover chain for investigations, light for cheap calls. Failover is
-  # up-only: light never falls back onto heavy.
+  # heavy is the failover chain for investigations, light for cheap calls. Light escalates
+  # into heavy; heavy goes on to light ONLY when every heavy backend is out of credit or
+  # refuses its key (agent LLM_ROUTER_DESCEND=credit, the default; "never" restores up-only).
+  # A backend may be listed in both lanes; it is still tried once per call.
   routes:
     heavy: []
     light: []
