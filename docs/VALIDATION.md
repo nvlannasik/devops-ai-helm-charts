@@ -23,7 +23,8 @@ So the chart's real payload is `templates/_validate.tpl`. It refuses to render w
   no kubeconfig, or in-cluster auth with its ServiceAccount token unmounted
 - the SQS request, response, or GitOps queue names differ between agent and worker
 - the agent has a `private-llm` backend but the worker is disabled — nothing would ever
-  answer those messages
+  answer those messages. A backend marked `externalWorker: true` does not count: an
+  llm-worker outside the release answers it (since 0.8.3; 0.8.2 refused to install)
 - the agent has GitOps remediation on while the worker is disabled, or has
   `gitops.enabled: false` — the agent holds no GitHub credentials by design, so every
   proposal it makes would be dropped by the one side that could act on it

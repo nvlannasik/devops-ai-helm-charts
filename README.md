@@ -64,8 +64,8 @@ to GHCR as an OCI artifact when a `v*` tag lands:
 
 ```bash
 # bump version: in charts/devops-ai-stack/Chart.yaml first — the workflow refuses a tag
-# that disagrees with it, because otherwise `v0.8.2` would republish 0.8.1 silently.
-git tag v0.8.2 && git push origin v0.8.2
+# that disagrees with it, because otherwise `v0.8.3` would republish 0.8.2 silently.
+git tag v0.8.3 && git push origin v0.8.3
 ```
 
 The result is `ghcr.io/nvlannasik/charts/devops-ai-stack:<version>`, installable directly:

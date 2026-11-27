@@ -357,7 +357,12 @@ real, or the key valid, is not.
     {{- if not (has ($b.kind | default "") $kinds) -}}
       {{- fail (printf "\n\ndevops-ai-agent.llm.backends[%d] (%q) has kind %q.\n\nValid kinds: %s.\n\n  claude             calls the Anthropic API directly\n  openai-compatible  calls an OpenAI-shaped /v1 endpoint directly (needs baseUrl)\n  private-llm        goes over SQS to llm-worker, which holds the credentials\n" $i $b.name ($b.kind | default "") (join ", " $kinds)) -}}
     {{- end -}}
-    {{- if eq $b.kind "private-llm" -}}
+    {{/* Only a private-llm backend this release must answer counts. One marked externalWorker
+         is answered by an llm-worker outside the release (beside the model it serves), so a
+         disabled in-release worker leaves it working — refusing that was a bug (2026-11-27:
+         the only private backend left was external, the worker was switched off, and the
+         release could not install at all). */}}
+    {{- if and (eq $b.kind "private-llm") (not $b.externalWorker) -}}
       {{- $hasPrivate = true -}}
     {{- end -}}
     {{- if and (eq $b.kind "openai-compatible") (not $b.baseUrl) -}}
@@ -403,7 +408,7 @@ real, or the key valid, is not.
   {{- end -}}
 
   {{- if and $hasPrivate (not $workerOn) -}}
-    {{- fail "\n\nA private-llm backend is configured on the agent, but devops-llm-worker is disabled.\n\nprivate-llm backends do not call an API directly — they put the request on SQS and wait for llm-worker to answer. With no worker running, every call routed to that backend hangs until llm.sqs.timeoutSeconds.\n\nEither set devops-llm-worker.enabled: true, or remove the private-llm entry from devops-ai-agent.llm.backends and from llm.routes.\n" -}}
+    {{- fail "\n\nA private-llm backend is configured on the agent, but devops-llm-worker is disabled.\n\nprivate-llm backends do not call an API directly — they put the request on SQS and wait for llm-worker to answer. With no worker running, every call routed to that backend hangs until llm.sqs.timeoutSeconds.\n\nEither set devops-llm-worker.enabled: true, mark the backend externalWorker: true if an llm-worker outside this release answers its queue, or remove the private-llm entry from devops-ai-agent.llm.backends and from llm.routes.\n" -}}
   {{- end -}}
 
   {{/* Same shape, other contract: the worker is the only side holding GitHub creds. */}}

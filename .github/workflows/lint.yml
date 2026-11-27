@@ -169,6 +169,24 @@ jobs:
           # No model required on this path, unlike the other two.
           echo "agent-builder renders without a model and without inert token settings"
 
+      # The other side of "private-llm backend with no worker": a backend whose queue is
+      # answered OUTSIDE this release needs no worker in it. 0.8.2 refused this exact shape
+      # and a live release could not install (2026-11-27), so it has to render.
+      - name: an external worker needs no worker in this release
+        run: |
+          set -eu
+          helm template t charts/devops-ai-stack \
+            --set devops-ai-agent.mcp.authToken=ci \
+            --set devops-mcp-server.mcp.authToken=ci \
+            --set devops-llm-worker.enabled=false \
+            --set devops-ai-agent.gitops.enabled=false \
+            --set devops-ai-agent.llm.provider=router \
+            --set 'devops-ai-agent.llm.backends[0].name=ext' \
+            --set 'devops-ai-agent.llm.backends[0].kind=private-llm' \
+            --set 'devops-ai-agent.llm.backends[0].requestQueue=ext-request.fifo' \
+            --set 'devops-ai-agent.llm.backends[0].externalWorker=true' \
+            --set 'devops-ai-agent.llm.routes.heavy[0]=ext' > /dev/null
+
       # The cross-service checks are the reason this chart exists, so a silent
       # regression in them is the failure that matters most. Each case below MUST fail
       # to render; a passing render here is the bug.
